@@ -1,78 +1,98 @@
 #!/usr/bin/env python3
 import logging
-import sem
-from sem.common import EmulationContext, RegisterRandomizer
-
-from unicorn import *
-from argparse import ArgumentParser, Namespace
 import secrets
+from argparse import ArgumentParser, Namespace, ArgumentError
+from functools import reduce
+
 from tqdm import tqdm
+from unicorn import Uc, UcError, UC_SECOND_SCALE
+from prettytable import PrettyTable
+
+from sem import EmulationContext, Randomizer, RegisterRandomizer
 
 log = logging.Logger(__name__)
 
 
 def parse_args() -> Namespace:
     parser = ArgumentParser(
-        description='Compare assembly semantics through emulation')
+        description="Compare assembly semantics through emulation")
     
     parser.add_argument('-a', '--arch', default='x86')
     parser.add_argument('-m', '--mode', default='64')
-    parser.add_argument('-c', '--count', default=1000)
-    parser.add_argument('-s', '--seed', default=secrets.randbits(64))
-    parser.add_argument('sample_a', help='First sample file to test')
-    parser.add_argument('sample_b', help='Second sample file to test')
+    parser.add_argument('-c', '--count', type=int, default=1000)
+    parser.add_argument('-s', '--seed', type=int, default=secrets.randbits(64))
+    parser.add_argument('samples', nargs='+', help="Sample files to compare")
+    args = parser.parse_args()
 
-    return parser.parse_args()
+    if len(args.samples) == 1:
+        parser.error("Expected two or more sample files")
+
+    return args
+
+
+def run_sample(emulator: Uc,
+               emu_begin: int,
+               emu_end: int,
+               context: EmulationContext,
+               randomizer: Randomizer,
+               timeout: int) -> dict[str, int]:
+    """Emulate a single sample and return register dump."""
+    try:
+        randomizer.update(emulator, context)
+        emulator.emu_start(emu_begin, emu_end, timeout)
+        return context.dump_registers(emulator)
+    except UcError as e:
+        pc = emulator.reg_read(context.pc_const)
+        pc -= EmulationContext.PROGRAM_BASE
+        log.critical(f"Exception encountered at PC=0x{pc:x}:")
+        log.critical(f"Failed to emulate: {e}", exc_info=True)
+        exit(1)
+
+
+def diff_reg_dumps(dumps: list[dict[str, int]]) -> dict[str, list[int]]:
+    """Return the register values that differ across dumps."""
+    if len(dumps) < 2:
+        return {}
+    diff: dict[str, list[int]] = {}
+    for register in dumps[0].keys():
+        if all(dumps[0].get(register, None) == dump.get(register, None)
+               for dump in dumps[1:]):
+            continue
+        diff[register] = [dump[register] for dump in dumps]
+    return diff
 
 
 def main():
     args = parse_args()
 
-    sample_a = open(args.sample_a, 'rb').read()
-    sample_b = open(args.sample_b, 'rb').read()
-    count = int(args.count)
     context = EmulationContext.get(args.arch, args.mode)
-    randomizer = RegisterRandomizer()
-    randomizer.seed = int(args.seed)
+    randomizer = RegisterRandomizer(args.seed)
+    samples = [open(sample_file, 'rb').read() for sample_file in args.samples]
+    samples_emu_info = [context.make_emulator(sample) for sample in samples]
 
-    a_emu, a_beg, a_end = context.make_emulator(sample_a)
-    b_emu, b_beg, b_end = context.make_emulator(sample_b)
+    for _ in tqdm(range(args.count)):
+        timeout = 10 * UC_SECOND_SCALE
+        sample_reg_dumps = [run_sample(*emu_info, context, randomizer, timeout)
+                            for emu_info in samples_emu_info]
+        diff = diff_reg_dumps(sample_reg_dumps)
 
-    for _ in tqdm(range(count)):
-        try:
-            TIMEOUT = 10 * UC_SECOND_SCALE
+        if len(diff) == 0:
+            # Every register has the same value across samples
+            randomizer.next_round()
+            continue
 
-            cur_emu = a_emu
-            randomizer.update(a_emu, context)
-            a_emu.emu_start(a_beg, a_end, TIMEOUT)
-            a_regs = context.dump_registers(a_emu)
+        print(f"Found difference with seed={randomizer.last_seed}\n")
 
-            cur_emu = b_emu
-            randomizer.seed = randomizer.last_seed
-            randomizer.update(b_emu, context)
-            b_emu.emu_start(b_beg, b_end, TIMEOUT)
-            b_regs = context.dump_registers(b_emu)
-
-            if a_regs == b_regs:
-                continue
-
-            print(f"Found difference with seed={randomizer.last_seed}")
-
-            registers = context.register_consts()
-            for regname in registers.keys():
-                if regname not in a_regs and regname not in b_regs:
-                    continue
-                if a_regs[regname] != b_regs[regname]:
-                    print(f'{regname}:\t{a_regs[regname]:08x}\t{b_regs[regname]:08x}')
-            break
-        except UcError as e:
-            cur_pc = cur_emu.reg_read(context.pc_const()) - EmulationContext.PROGRAM_BASE
-            log.critical(f"Exception encountered at PC=0x{cur_pc:x}:")
-            log.critical(f"Failed to emulate: {e}", exc_info=True)
-            exit(1)
-
+        table = PrettyTable(['Register', *args.samples])
+        for register, values in diff.items():
+            # TODO: support n-tuple register_size return value
+            size = context.register_size(register)[0] * 2
+            values = ['0x' + f'{val:x}'.rjust(size, '0') for val in values]
+            table.add_row([register, *values])
+        print(table)
+        exit(1)
     else:
-        print('No difference found.')
+        print("No difference found.")
 
 
 if __name__ == '__main__':

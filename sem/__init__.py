@@ -1,3 +1,5 @@
-from . import common, x86
+#!/usr/bin/env python3
+from .common import EmulationContext, Randomizer, RegisterRandomizer
 
-__all__ = ['common', 'x86']
+# To make EmulationContext.get work properly
+from .x86 import X86EmulationContext

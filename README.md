@@ -8,7 +8,7 @@ Name subject to change.
 ## Requirements
 
 ```shell
-pip install unicorn pwntools tqdm
+pip install unicorn pwntools tqdm prettytable
 ```
 
 ## Example

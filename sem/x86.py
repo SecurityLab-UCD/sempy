@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-from math import ceil, log2
-from unicorn import Uc, UcError, UC_HOOK_CODE
-from pwn import asm
 from .common import EmulationContext
+
 import logging
+from math import ceil, log2
+
+from pwn import asm
+from unicorn import Uc, UcError, UC_HOOK_CODE
 
 log = logging.Logger(__name__)
 
@@ -89,6 +91,7 @@ class X86EmulationContext(EmulationContext):
                 reg_values[regname] = value
             except UcError as e:
                 log.warning(f'Failed to read register {regname}: {e}')
+                reg_values[regname] = None
         return reg_values
 
     @property

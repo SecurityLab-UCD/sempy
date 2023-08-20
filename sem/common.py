@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 import logging
 import importlib
-from unicorn import Uc, UcError, unicorn_const
-from typing import Callable, Union
+from typing import Union
 from abc import ABC, abstractmethod
 from random import Random
+
+from unicorn import Uc, UcError, unicorn_const
 
 log = logging.getLogger(__name__)
 
 
-# Override to customize emulation behavior for each architecture / experiment
 class EmulationContext(ABC):
+    """An EmulationContext specifies how a sample is emulated and compared
+    against others."""
 
     PROGRAM_BASE = 0x10000000
 
     @abstractmethod
     def allowed_registers(self) -> list[str]:
-        """Return registers that can be randomized without causing CPU exception."""
+        """Return registers that can be randomized without causing CPU
+        exception."""
         pass
     
     @abstractmethod
@@ -41,7 +44,8 @@ class EmulationContext(ABC):
     
     @abstractmethod
     def make_emulator(self, sample: bytes, stack_size_mb: int = 1) -> tuple[Uc, int, int]:
-        """Return a reusable emulator object and the start & end address for emulation."""
+        """Return a reusable emulator object and the start & end address for
+        emulation."""
         pass
 
     @property
@@ -89,7 +93,8 @@ class EmulationContext(ABC):
         # get the unicorn.<arch>_consts submodule
         target_const = None
         try:
-            target_const = importlib.import_module(f'.{self.arch.lower()}_const', 'unicorn')
+            target_const = importlib.import_module(
+                f'.{self.arch.lower()}_const', 'unicorn')
         except ModuleNotFoundError:
             log.critical(f'Architecture {self.arch} not found!', exc_info=True)
             exit(1)
@@ -127,7 +132,11 @@ class Randomizer(ABC):
 
     @abstractmethod
     def update(self, emulator: Uc, context: EmulationContext):
-        """Update register values or memory content."""
+        """Update register values or memory content.
+
+        Note that each call to update() must use the same seed until reseed() is
+        called. This is so that each sample gets the same register inputs for
+        each round of emulation. This method also updates last_seed."""
         pass
 
     @property
@@ -138,13 +147,19 @@ class Randomizer(ABC):
     @property
     @abstractmethod
     def seed(self):
-        """Get seed to use for the upcoming update() call."""
+        """Get the seed used for future update() calls."""
         pass
 
     @seed.setter
     @abstractmethod
     def seed(self, value):
-        """Initialize the underlying randomization engine with a seed."""
+        """Set the seed to use for future update() calls."""
+        pass
+
+    @abstractmethod
+    def next_round(self):
+        """Set the next random number as the new seed. Use when done with a
+        single round of emulation (i.e. emulated every sample once)."""
         pass
 
     
@@ -158,7 +173,8 @@ class RegisterRandomizer(Randomizer):
 
     def update(self, emulator: Uc, context: EmulationContext):
         registers = context.register_consts()
-        registers = { regname: registers[regname] for regname in context.allowed_registers() }
+        registers = { regname: registers[regname]
+                      for regname in context.allowed_registers() }
         self._last_seed = self.seed
         for regname, regenum in registers.items():
             try:
@@ -174,7 +190,8 @@ class RegisterRandomizer(Randomizer):
                 emulator.reg_write(regenum, value)
             except Exception as e:
                 log.warning(f'Failed to write register {regname}: {e}')
-        self.seed = self._random.randint(0, 2 ** 64 - 1)
+        self.seed = self.seed
+
 
     @property
     def last_seed(self) -> Union[int, None]:
@@ -189,3 +206,6 @@ class RegisterRandomizer(Randomizer):
         self._seed = value
         self._random.seed(self._seed)
         pass
+
+    def next_round(self):
+        self.seed = self._random.randint(0, 2 ** 64 - 1)
