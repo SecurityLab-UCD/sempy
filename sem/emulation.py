@@ -20,7 +20,7 @@ class EmulationContext(ABC):
     def __init__(self) -> None:
         super().__init__()
         self.__register_consts = None
-
+    
     @abstractmethod
     def set_arg_types(self, args: list[str]) -> None:
         """Set function argument types."""
