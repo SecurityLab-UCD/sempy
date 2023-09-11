@@ -1,14 +1,14 @@
 # SemPy
 
-A tool intended for preventing compiler regressions by comparing different
-machine code compiled from the same assembly code.
+A tool for testing compiler optimization by compiling the same code under
+various optimization levels and comparing emulation results.
 
 Name subject to change.
 
 ## Requirements
 
 ```shell
-pip install unicorn pwntools tqdm prettytable
+poetry install
 ```
 
 ## Example

@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "sempy"
+version = "0.1.0"
+description = "Compiler testing through emulation."
+authors = ["Zhenkai Weng <theoaktree1040@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+unicorn = "^2.0.1.post1"
+pwntools = "^4.10.0"
+tqdm = "^4.66.1"
+prettytable = "^3.8.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

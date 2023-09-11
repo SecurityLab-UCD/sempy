@@ -3,7 +3,7 @@ import logging
 import importlib
 import pkgutil
 from enum import Flag, auto
-from typing import Union
+from typing import Union, Iterable
 from abc import ABC, abstractmethod
 from random import Random
 
@@ -168,11 +168,16 @@ class Randomizer(ABC):
         This method also updates last_seed."""
         pass
 
-    @property
     @abstractmethod
     def get(self) -> int:
         """Return a random int"""
         pass
+
+    @abstractmethod
+    def choice(self, obj: Iterable) -> any:
+        """Choose an element from an iterable"""
+        pass
+
 
     @property
     @abstractmethod
@@ -355,9 +360,11 @@ class DefaultRandomizer(Randomizer):
             variable.set(data, emulator)
         self.seed = self._last_seed
 
-    @property
     def get(self) -> int:
         return self._random.randint(0, 2**64 - 1)
+
+    def choice(self, obj: Iterable) -> any:
+        return self._random.choice(obj)
 
     @property
     def last_seed(self) -> Union[int, None]:
