@@ -20,10 +20,10 @@ class EmulationContext(ABC):
     def __init__(self) -> None:
         super().__init__()
         self.__register_consts = None
-    
+
     @abstractmethod
     def set_arg_types(self, args: list[str]) -> None:
-        """Set function argument types."""
+        """Set function argument types. Calls to this function must be repeatable."""
         pass
 
     @property
@@ -177,7 +177,6 @@ class Randomizer(ABC):
     def choice(self, obj: Iterable) -> any:
         """Choose an element from an iterable"""
         pass
-
 
     @property
     @abstractmethod

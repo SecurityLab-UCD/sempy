@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-from ..emulation import (
-    EmulationContext,
-    Variable,
-    MemVar,
-    RandMemVar,
-    Register,
-    VarAttr,
-)
-
 import logging
 from math import ceil, log2
 
 from pwn import asm
-from unicorn import Uc, UcError, UC_HOOK_CODE
-from unicorn.unicorn_const import UC_PROT_READ, UC_PROT_WRITE, UC_PROT_EXEC
+from unicorn import UC_HOOK_CODE, Uc, UcError
+from unicorn.unicorn_const import UC_PROT_EXEC, UC_PROT_READ, UC_PROT_WRITE
+
+from ..emulation import (
+    EmulationContext,
+    MemVar,
+    RandMemVar,
+    Register,
+    VarAttr,
+    Variable,
+)
 
 log = logging.Logger(__name__)
 
@@ -68,6 +68,11 @@ class X86EmulationContext(EmulationContext):
 
     def set_arg_types(self, arg_types: list[str]):
         # TODO: handle mode 32
+        stack_map = self._mmaps["stack"]
+        self._rsp = stack_map[0] + stack_map[1]
+        # XXX: debug
+        print(f"Initial RSP={self._rsp:x}")
+
 
         # integer / pointer arguments from left to right
         arg_gprs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -87,7 +92,7 @@ class X86EmulationContext(EmulationContext):
             # NOTE: Refer to https://www.uclibc.org/docs/psABI-x86_64.pdf for ABI
             # HACK: For now, assume that there won't be enough floating pointer & vector
             # arguments to fill all SSE registers.
-            if arg_type[0] not in ["i", "p"]:
+            if arg_type[0] not in ["i", "p", "u"]:
                 continue
             if unused_gpr < len(arg_gprs):
                 # NOTE: Also assuming that i<size> is within word size
@@ -111,6 +116,7 @@ class X86EmulationContext(EmulationContext):
                     )
 
         # NOTE: Order is important. RandMemVars depend on the corresponding args.
+        # FIXME: add stack randomization to emulate undef behavior
         self._variables.extend(arg_gprs)
         self._variables.extend(sse_gprs)
         self._variables.extend(non_arg_gprs)
@@ -178,6 +184,9 @@ class X86EmulationContext(EmulationContext):
         emulator.mem_write(bootstrap_base, bootstrap)
 
         def stack_setup(emulator: Uc, address, size, user_data):
+            # XXX: debug
+            print(f"Setting RSP={self._rsp:x}")
+
             emulator.reg_write(self.register_consts["rsp"], self._rsp)
 
         emulator.hook_add(UC_HOOK_CODE, stack_setup, None, emu_start, emu_start)
@@ -202,7 +211,7 @@ class X86EmulationContext(EmulationContext):
 
     @mode.setter
     def mode(self, value: str):
-        if value == '64':
+        if value == "64":
             self._mode == value
         else:
             raise ValueError(f"Mode not supported for x86: {value}")
