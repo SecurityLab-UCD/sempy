@@ -188,6 +188,7 @@ class CSmithProvider(ProgramProvider):
             #        To get things working, consider just regex-searching IR instead of parsing C
 
             programs: list[Program] = []
+
             for opt_level in experiment.opt_levels:
                 ll_path = os.path.join(tmpdir, f"{opt_level}.ll")
                 elf_path = os.path.join(tmpdir, f"{opt_level}.o")
@@ -224,6 +225,12 @@ class CSmithProvider(ProgramProvider):
                 subprocess.run(
                     ["objcopy", "-O", "binary", "-j", ".text", elf_path, bin_path]
                 )
+            ll_path = os.path.join(tmpdir, f"{experiment.opt_levels[0]}.ll")
+            with open(ll_path, 'r') as ll_file:
+                ll = ll_file.read()
+
+            for opt_level in experiment.opt_levels:
+                bin_path = os.path.join(tmpdir, f"{opt_level}.bin")
                 with open(bin_path, "rb") as program:
                     # FIXME: find start address of target function
                     programs.append(

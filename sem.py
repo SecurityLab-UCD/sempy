@@ -50,7 +50,7 @@ def parse_args() -> Namespace:
         type=partial(str.split, sep=","),
         default=[],
         nargs="?",
-        help="Function argument types (format: [iufvp]\\d+) (e.g. i64)",
+        help="Function argument types (format: /[iufvp]\\d+/) (e.g. i64)",
     )
     parser.add_argument("files", default=[], nargs="*", help="Files to compare")
     args = parser.parse_args()
@@ -61,7 +61,7 @@ def parse_args() -> Namespace:
         for arg_type in args.types:
             if len(arg_type) < 2:
                 parser.error(f"Argument type too short: {arg_type}")
-            if arg_type[0] not in ["i", "f", "v", "p"]:
+            if arg_type[0] not in ["i", "u", "f", "v", "p"]:
                 parser.error(f"Invalid argument type: {arg_type[0]}")
             if not str.isnumeric(arg_type[1:]):
                 parser.error(f"Invalid argument bit size: {arg_type[1:]}")
