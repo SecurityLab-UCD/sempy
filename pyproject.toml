@@ -12,6 +12,7 @@ pwntools = "^4.10.0"
 tqdm = "^4.66.1"
 prettytable = "^3.8.0"
 pycparser = "^2.21"
+pyelftools = "0.29"
 
 
 [build-system]
