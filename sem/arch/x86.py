@@ -13,6 +13,7 @@ from ..emulation import (
     Register,
     VarAttr,
     Variable,
+    Program,
 )
 
 log = logging.Logger(__name__)
@@ -66,7 +67,7 @@ class X86EmulationContext(EmulationContext):
         self._rsp -= size_on_stack
         return MemVar(self._rsp, size, self, VarAttr.MEMORY | VarAttr.FUNCTION_ARG)
 
-    def set_arg_types(self, arg_types: list[str]):
+    def set_fn(self, ret_ty: str, arg_tys: list[str]):
         # TODO: handle mode 32
         stack_map = self._mmaps["stack"]
         self._rsp = stack_map[0] + stack_map[1]
@@ -88,7 +89,7 @@ class X86EmulationContext(EmulationContext):
 
         stack_vars: list[MemVar] = []
         heap_vars: list[RandMemVar] = []
-        for arg_type in arg_types:
+        for arg_type in arg_tys:
             # NOTE: Refer to https://www.uclibc.org/docs/psABI-x86_64.pdf for ABI
             # HACK: For now, assume that there won't be enough floating pointer & vector
             # arguments to fill all SSE registers.
@@ -125,11 +126,23 @@ class X86EmulationContext(EmulationContext):
 
         # Registers that may contain return values: rax, rdx, ymm0
         # Don't need the exact Variable objects created earlier.
-        self._result_variables = [
-            Register("rax", self),
-            Register("rdx", self),
-            Register("ymm0", self),
-        ]
+        if ret_ty[0] in ["i", "u"]:
+            size = int(ret_ty[1:])
+            reg = ""
+            match size:
+                case 16: reg = "ax"
+                case 32: reg = "eax"
+                case _: reg = "rax"
+            self._result_variables = [Register(reg, self)]
+        elif ret_ty[0] in ["v", "f"]:
+            self._result_variables = [Register("ymm0", self)]
+        elif ret_ty[0] == "p":
+            self._result_variables = [
+                RandMemVar(Register("rax", self), int(ret_ty[1:]), self)
+            ]
+        else:
+            log.warning(f"Unidentified return type {ret_ty}, defaulting to int")
+            self._result_variables = [Register("rax", self)]
         self._result_variables.extend(heap_vars)
 
     def allowed_registers(self) -> list[str]:
@@ -159,7 +172,7 @@ class X86EmulationContext(EmulationContext):
             return 64
         raise ValueError(f"Register size not known: {name}")
 
-    def make_emulator(self, sample: bytes) -> tuple[Uc, int, int]:
+    def make_emulator(self, program: Program) -> tuple[Uc, int, int]:
         # TODO: track memory accesses (esp. writes) and add to self._result_variables
         emulator = Uc(self.arch_const, self.mode_const)
 
@@ -169,7 +182,7 @@ class X86EmulationContext(EmulationContext):
         emu_end = bootstrap_base + bootstrap_size
 
         bootstrap: bytes = asm(
-            f"call 0x{self.program_base:x}",
+            f"call 0x{self.program_base + program.fn_start_offset:x}",
             vma=bootstrap_base,
             arch="amd64",
             os="linux",
@@ -180,7 +193,7 @@ class X86EmulationContext(EmulationContext):
         for base, size, perms in self._mmaps.values():
             emulator.mem_map(base, size, perms)
 
-        emulator.mem_write(self.program_base, sample)
+        emulator.mem_write(self.program_base, program.image)
         emulator.mem_write(bootstrap_base, bootstrap)
 
         def stack_setup(emulator: Uc, address, size, user_data):

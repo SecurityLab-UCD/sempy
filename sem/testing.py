@@ -14,21 +14,14 @@ import tempfile
 from prettytable import PrettyTable
 from tqdm import tqdm
 from unicorn import Uc, UcError
+from elftools.elf.elffile import ELFFile
 
 # XXX: DEBUG
 from unicorn.unicorn_const import *
 
-from .emulation import EmulationContext, Randomizer, VarAttr, Variable
+from .emulation import EmulationContext, Randomizer, VarAttr, Variable, Program
 
 log = logging.Logger(__name__)
-
-
-@dataclass
-class Program:
-    name: str  # name of program (e.g. optimization level)
-    image: bytes  # program image (.text section only)
-    fn_arg_types: list[str]  # function argument types
-    fn_start_offset: int  # address offset of the target function
 
 
 class ProgramProvider(ABC):
@@ -71,13 +64,13 @@ class Experiment:
         self.randomizer.next_round()
         self._programs = self.program_provider.get(self)
         assert len(self._programs) >= 2
-        self.context.set_arg_types(self._programs[0].fn_arg_types)
+        self.context.set_fn(
+            self._programs[0].fn_ret_type, self._programs[0].fn_arg_types
+        )
         # XXX: debug
         print(len(self._programs[0].image))
         # FIXME: make use of fn start offset; don't assume it's 0 here
-        emu_infos = [
-            self.context.make_emulator(program.image) for program in self._programs
-        ]
+        emu_infos = [self.context.make_emulator(program) for program in self._programs]
         self._emulators = [info[0] for info in emu_infos]
         # XXX: debug
         # for emulator, emu_begin, emu_end in emu_infos:
@@ -158,31 +151,15 @@ class Experiment:
 class CSmithProvider(ProgramProvider):
     """Generate programs with CSmith and compile with clang."""
 
+    # TODO: change to option
+    CSMITH_RUNTIME = os.path.join(os.environ["HOME"], "csmith/runtime")
+
     def get(self, experiment: Experiment) -> list[Program]:
         """Generate programs for all specified optimization levels."""
         with TemporaryDirectory(prefix="/dev/shm/") as tmpdir:
             # Remove `static` to make sure that function symbols are exported
-
-            csmith_proc: CompletedProcess = subprocess.run(
-                [
-                    "csmith",
-                    "-s",
-                    str(experiment.randomizer.get()),
-                    "--max-funcs",
-                    "5",
-                    "--no-global-variables",
-                    "--nomain" "--no-checksum" "--no-builtins",
-                    "--concise",
-                    "--no-structs",
-                    "--no-unions",
-                ],
-                capture_output=True,
-            )
-            source = csmith_proc.stdout.decode("utf-8")
-            source = source.replace("static ", "")
             source_path = os.path.join(tmpdir, "source.c")
-            with open(source_path, "w") as source_file:
-                source_file.write(source)
+            self.gen_csmith_program(experiment, source_path)
 
             # FIXME: Get function list -> choose fn with arg -> extract ret ty & arg tys -> extract address
             #        To get things working, consider just regex-searching IR instead of parsing C
@@ -206,7 +183,8 @@ class CSmithProvider(ProgramProvider):
                         source_path,
                         "-o",
                         ll_path,
-                    ]
+                    ],
+                    stderr=subprocess.DEVNULL,
                 )
                 subprocess.run(
                     [
@@ -226,28 +204,72 @@ class CSmithProvider(ProgramProvider):
                     ["objcopy", "-O", "binary", "-j", ".text", elf_path, bin_path]
                 )
             ll_path = os.path.join(tmpdir, f"{experiment.opt_levels[0]}.ll")
-            with open(ll_path, 'r') as ll_file:
-                ll = ll_file.read()
 
             for opt_level in experiment.opt_levels:
                 bin_path = os.path.join(tmpdir, f"{opt_level}.bin")
                 with open(bin_path, "rb") as program:
                     # FIXME: find start address of target function
                     programs.append(
-                        Program(f"-O{opt_level}", program.read(), None, None)
+                        Program(f"O{opt_level}", program.read(), None, None)
                     )
             return programs
 
-    def _choose_fn(self, experiment: Experiment, c_source: str) -> list[str]:
-        match_signature = r"^define .*? @f\((?P<arg_list>.*)\) .*{"
-        for line in c_source.split("\n"):
-            m = re.fullmatch(match_signature, line)
-            if not m:
-                continue
-            arg_list = m.group("arg_list")
-            if not arg_list:
-                raise RuntimeError("f has an empty parameter list!")
-            return self._parse_arg_tys(arg_list)
+    def gen_csmith_program(self, experiment: Experiment, output_path: str):
+        """Generate a random CSmith program and return its path."""
+        csmith_proc: CompletedProcess = subprocess.run(
+            [
+                "csmith",
+                "-s",
+                str(experiment.randomizer.get()),
+                "--max-funcs",
+                "5",
+                "--no-global-variables",
+                "--nomain",
+                "--no-checksum",
+                "--no-builtins",
+                "--concise",
+                "--no-structs",
+                "--no-unions",
+            ],
+            capture_output=True,
+        )
+        source = csmith_proc.stdout.decode("utf-8")
+        source = source.replace("static ", "")
+        # HACK: get simple memcpy & memset definition from csmith runtime
+        source = "#define TCC\n" + source
+        with open(output_path, "w") as source_file:
+            source_file.write(source)
+
+    def get_fn_offset(self, elf_path, fn_name):
+        with open(elf_path, "rb") as file:
+            elf = ELFFile(file)
+
+            # Find the .text section
+            text_section = None
+            for section in elf.iter_sections():
+                if section.name == ".text":
+                    text_section = section
+                    break
+
+            if text_section is None:
+                raise ValueError("The .text section was not found in the ELF file.")
+
+            # Find the address of the specified function
+            function_address = None
+            for section in elf.iter_sections():
+                if section.name != ".symtab":
+                    continue
+                for symbol in section.iter_symbols():
+                    if symbol.name == fn_name:
+                        function_address = symbol["st_value"]
+                        break
+
+            if function_address is None:
+                raise ValueError(f"Function '{fn_name}' not found in the symbol table.")
+
+            # Calculate the offset from the start of .text section
+            offset = function_address - text_section["sh_addr"]
+            return offset
 
     @property
     def name(self) -> str:
@@ -257,12 +279,11 @@ class CSmithProvider(ProgramProvider):
 class IRFuzzerProvider(ProgramProvider):
     MUTATION_ITERS = 10
 
-    def get(self, experiment: Experiment) -> tuple[list[str], dict[str, bytes]]:
+    def get(self, experiment: Experiment) -> list[Program]:
         # TODO: architecture handling?
         # XXX: debug
         #      original: TemporaryDirectory(prefix="/dev/shm/")
         with contextlib.nullcontext(tempfile.mkdtemp()) as tmpdir:
-            # with TemporaryDirectory(prefix="/dev/shm/") as tmpdir:
             # XXX: debug
             print(tmpdir)
             ir_bc_path = os.path.join(tmpdir, "out.bc")
@@ -279,11 +300,8 @@ class IRFuzzerProvider(ProgramProvider):
                     stderr=subprocess.DEVNULL,
                 )
             ir_ll_path = os.path.join(tmpdir, "out.ll")
-            subprocess.run(
-                ["llvm-dis", "-opaque-pointers", ir_bc_path, "-o", ir_ll_path]
-            )
-            # always just choose f
-            tys = self._choose_fn(experiment, ir_ll_path)
+            subprocess.run(["llvm-dis", ir_bc_path, "-o", ir_ll_path])
+            name, ret_ty, arg_tys = self.choose_ir_fn(experiment, ir_ll_path)
 
             programs: list[Program] = []
             for opt_level in experiment.opt_levels:
@@ -292,7 +310,6 @@ class IRFuzzerProvider(ProgramProvider):
                 subprocess.run(
                     [
                         "opt",
-                        "--opaque-pointers",
                         f"--O{opt_level}",
                         ir_ll_path,
                         "-o",
@@ -306,7 +323,6 @@ class IRFuzzerProvider(ProgramProvider):
                 llc_args = [
                     "llc",
                     f"-O{opt_level}",
-                    "--opaque-pointers",
                     f"-mtriple={arch if arch != 'x86' else 'x86_64'}--",
                     ir_opt_ll_path,
                     "-o",
@@ -326,24 +342,40 @@ class IRFuzzerProvider(ProgramProvider):
 
                 with open(image_path, "rb") as image_file:
                     image = image_file.read()
-                programs.append(Program(f"-O{opt_level}", image, tys, 0))
+                programs.append(Program(f"O{opt_level}", image, ret_ty, arg_tys, 0))
             # TODO: make sure that addressspace is specified, so that alloca still allocates on *stack*
             #       alloca ref: https://llvm.org/docs/LangRef.html#alloca-instruction
             # TODO: llc: check if memcpy and other builtins are used
             return programs
 
-    def _choose_fn(self, experiment: Experiment, ir_ll_path: str) -> list[str]:
-        match_signature = r"^define .*? @f\((?P<arg_list>.*)\) .*{"
+    def choose_ir_fn(
+        self,
+        experiment: Experiment,
+        ir_ll_path: str,
+        fn_name_regex: str = r"[a-zA-Z_][a-zA-Z_0-9]+",
+    ) -> tuple[str, str, list[str]]:
+        match_signature = (
+            r"^define .*? (?P<ret_ty>[^ ]+) @(?P<fn_name>"
+            + fn_name_regex
+            + r")\((?P<arg_list>.*)\) .*{"
+        )
         with open(ir_ll_path, "r") as ir_ll_file:
             ir_ll_source_lines = [line.rstrip() for line in ir_ll_file.readlines()]
         for line in ir_ll_source_lines:
             m = re.fullmatch(match_signature, line)
             if not m:
                 continue
+            fn_name = m.group("fn_name")
+            ret_ty = self._parse_arg_tys(m.group("ret_ty"))[0]
             arg_list = m.group("arg_list")
-            if not arg_list:
-                raise RuntimeError("f has an empty parameter list!")
-            return self._parse_arg_tys(arg_list)
+            if (
+                not arg_list
+                or fn_name in ["memcpy", "memset"]
+                or fn_name.startswith("safe_")
+            ):
+                continue
+            return (fn_name, ret_ty, self._parse_arg_tys(arg_list))
+        raise RuntimeError("All functions have empty parameter lists!")
 
     def _parse_arg_tys(self, arg_list: str) -> list[str]:
         args: list[str] = [ty.strip() for ty in arg_list.split(sep=",")]
@@ -387,6 +419,102 @@ class IRFuzzerProvider(ProgramProvider):
     @property
     def name(self) -> str:
         return "irfuzzer"
+
+
+class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
+    def get(self, experiment: Experiment) -> list[Program]:
+        # TODO: replace prefix with an cmdline option,
+        #   and preserve the test directory with a difference
+        # with TemporaryDirectory(prefix="/dev/shm/") as tmpdir:
+        with contextlib.nullcontext(tempfile.mkdtemp(prefix="/dev/shm/")) as tmpdir:
+            print(tmpdir)
+            # TODO: organize some of the steps into inherited functions to remove redundant code
+            # Generate source
+            source_c_path = os.path.join(tmpdir, "out.c")
+            source_bc_path = os.path.join(tmpdir, "out.bc")
+            source_ll_path = os.path.join(tmpdir, "out.ll")
+            self.gen_csmith_program(experiment, source_c_path)
+
+            subprocess.run(
+                [
+                    "clang",
+                    "-S",
+                    "-emit-llvm",
+                    "-O0",
+                    "-Xclang",
+                    "-disable-O0-optnone",
+                    f"-I{self.CSMITH_RUNTIME}",
+                    "-nostdlib",
+                    "-ffreestanding",
+                    "-fno-builtin",
+                    source_c_path,
+                    "-o",
+                    source_ll_path,
+                ],
+                stderr=subprocess.DEVNULL,
+            )
+            subprocess.run(["llvm-as", source_ll_path])
+
+            for _ in range(self.MUTATION_ITERS):
+                subprocess.run(
+                    ["MutatorDriver", source_bc_path, str(experiment.randomizer.get())],
+                    cwd=tmpdir,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            subprocess.run(["llvm-dis", source_bc_path])
+            fn_name, ret_ty, arg_tys = self.choose_ir_fn(experiment, source_ll_path)
+            programs: list[Program] = []
+
+            for opt_level in experiment.opt_levels:
+                opt_ll_path = os.path.join(tmpdir, f"{opt_level}.ll")
+                asm_path = os.path.join(tmpdir, f"{opt_level}.s")
+                elf_path = os.path.join(tmpdir, f"{opt_level}.elf")
+                image_path = os.path.join(tmpdir, f"{opt_level}.bin")
+
+                subprocess.run(
+                    [
+                        "opt",
+                        "-S",
+                        f"--passes=default<O{opt_level}>",
+                        "--disable-simplify-libcalls",
+                        source_bc_path,
+                        "-o",
+                        opt_ll_path,
+                    ]
+                )
+
+                arch = experiment.context.arch
+                llc_args = [
+                    "llc",
+                    f"-O{opt_level}",
+                    f"-mtriple={arch if arch != 'x86' else 'x86_64'}--",
+                    opt_ll_path,
+                    "-o",
+                    asm_path,
+                ]
+                if arch == "x86":
+                    llc_args.append("-mattr=+sse,+sse2")
+                subprocess.run(llc_args)
+
+                subprocess.run(["as", asm_path, "-o", elf_path])
+                fn_offset = self.get_fn_offset(elf_path, fn_name)
+
+                subprocess.run(
+                    ["objcopy", "-O", "binary", "-j", ".text", elf_path, image_path]
+                )
+
+                with open(image_path, "rb") as image_file:
+                    image = image_file.read()
+                programs.append(
+                    Program(f"O{opt_level}", image, ret_ty, arg_tys, fn_offset)
+                )
+
+            return programs
+
+    @property
+    def name(self) -> str:
+        return "mutate-csmith"
 
 
 class FileProvider(ProgramProvider):

@@ -2,6 +2,7 @@
 import logging
 import importlib
 import pkgutil
+from dataclasses import dataclass
 from enum import Flag, auto
 from typing import Union, Iterable
 from abc import ABC, abstractmethod
@@ -13,6 +14,15 @@ from unicorn import Uc, UcError, unicorn_const
 log = logging.getLogger(__name__)
 
 
+@dataclass
+class Program:
+    name: str  # name of program (e.g. optimization level)
+    image: bytes  # program image (.text section only)
+    fn_ret_type: str  # function return type
+    fn_arg_types: list[str]  # function argument types
+    fn_start_offset: int  # address offset of the target function
+
+
 class EmulationContext(ABC):
     """An EmulationContext specifies how a sample is emulated and compared
     against others."""
@@ -22,7 +32,7 @@ class EmulationContext(ABC):
         self.__register_consts = None
 
     @abstractmethod
-    def set_arg_types(self, args: list[str]) -> None:
+    def set_fn(self, ret_ty: str, arg_tys: list[str]) -> None:
         """Set function argument types. Calls to this function must be repeatable."""
         pass
 
@@ -50,7 +60,7 @@ class EmulationContext(ABC):
         pass
 
     @abstractmethod
-    def make_emulator(self, sample: bytes) -> tuple[Uc, int, int]:
+    def make_emulator(self, program: Program) -> tuple[Uc, int, int]:
         """Return a reusable emulator object and the start & end address for
         emulation."""
         pass
@@ -326,6 +336,8 @@ class RandMemVar(Variable):
             return False
 
     def get(self, emulator: Uc):
+        if not self._addr:
+            self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
         return emulator.mem_read(self._addr, self._size)
 
     @property

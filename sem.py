@@ -21,6 +21,11 @@ from sem.testing import Experiment, ProgramProvider
 log = logging.Logger(__name__)
 
 
+def all_subclasses(cls):
+    return set(cls.__subclasses__()).union(
+        [s for c in cls.__subclasses__() for s in all_subclasses(c)])
+
+
 def parse_args() -> Namespace:
     """Parse command-line arguments and error-check."""
     parser = ArgumentParser(description="Compare assembly semantics through emulation")
@@ -42,7 +47,7 @@ def parse_args() -> Namespace:
         "-p",
         "--provider",
         required=True,
-        choices=[Sub().name for Sub in ProgramProvider.__subclasses__()],
+        choices=[Sub().name for Sub in all_subclasses(ProgramProvider)],
     )
     parser.add_argument(
         "-t",
@@ -81,7 +86,7 @@ def main():
 
     context = EmulationContext.get(args.arch, args.mode)
     provider = next(
-        Sub() for Sub in ProgramProvider.__subclasses__() if Sub().name == args.provider 
+        Sub() for Sub in all_subclasses(ProgramProvider) if Sub().name == args.provider
     )
     if provider.name == "file":
         provider.set_files(args.files, args.types)
