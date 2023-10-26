@@ -3,21 +3,20 @@ import contextlib
 import logging
 import os
 import re
+import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from binascii import hexlify
 from dataclasses import dataclass
+from enum import IntEnum, auto
 from subprocess import CompletedProcess
-from tempfile import TemporaryDirectory
 import tempfile
 
 from prettytable import PrettyTable
 from tqdm import tqdm
 from unicorn import Uc, UcError
-from elftools.elf.elffile import ELFFile
-
-# XXX: DEBUG
 from unicorn.unicorn_const import *
+from elftools.elf.elffile import ELFFile
 
 from .emulation import EmulationContext, Randomizer, VarAttr, Variable, Program
 
@@ -38,11 +37,20 @@ class ProgramProvider(ABC):
         pass
 
 
+class RunStatus(IntEnum):
+    RUN_OK = 0
+    RUN_DIFF = auto()
+    RUN_GEN_EXC = auto()
+    RUN_TIMEOUT = auto()
+    RUN_EMU_EXC = auto()
+
+
 @dataclass
 class Experiment:
     """Class for testing compiler optimization passes."""
 
     name: str
+    output_dir: str
     initial_seed: int
     program_provider: ProgramProvider
     opt_levels: set[str]
@@ -52,74 +60,65 @@ class Experiment:
     timeout: int
 
     def __post_init__(self):
+        os.makedirs(self.output_dir, exist_ok=True)
         self.randomizer.seed = self.initial_seed
-        # XXX: debug
-        print(f"Initial seed: {self.initial_seed}")
         self._programs: list[Program] = []
         self._emulators: list[Uc] = []
         self._diff: dict[Variable, list[bytes]] = {}
 
-    def run(self) -> bool:
-        """Returns if there any varaible difference is found."""
-        self.randomizer.next_round()
-        self._programs = self.program_provider.get(self)
+    def run(self, program_seed: int = None) -> tuple[RunStatus, int]:
+        """Returns (difference found, program seed)."""
+        if not program_seed:
+            program_seed = self.randomizer.next_round()
+        else:
+            self.randomizer.seed = program_seed
+
+        try:
+            self._programs = self.program_provider.get(self)
+        except:
+            return (RunStatus.RUN_GEN_EXC, program_seed)
+
         assert len(self._programs) >= 2
         self.context.set_fn(
             self._programs[0].fn_ret_type, self._programs[0].fn_arg_types
         )
-        # XXX: debug
-        print(len(self._programs[0].image))
-        # FIXME: make use of fn start offset; don't assume it's 0 here
         emu_infos = [self.context.make_emulator(program) for program in self._programs]
         self._emulators = [info[0] for info in emu_infos]
-        # XXX: debug
-        # for emulator, emu_begin, emu_end in emu_infos:
-        #     def debug(emulator: Uc, address, size, user_data):
-        #         print(f"RIP={address:x}")
-        #         print(f"RSP={emulator.reg_read(self.context.register_consts['rsp']):x}")
-        #         print(f"RBP={emulator.reg_read(self.context.register_consts['rbp']):x}")
-        #         print('-'*15)
-        #     emulator.hook_add(UC_HOOK_CODE, debug, None, 1, 0)
 
-        for _ in tqdm(range(self.repeat_count)):
+        for _ in range(self.repeat_count):
+            self.randomizer.next_round()
             for idx, emu_info in enumerate(emu_infos):
                 emulator, emu_begin, emu_end = emu_info
                 try:
                     self.randomizer.update(emulator, self.context)
                     emulator.emu_start(emu_begin, emu_end, self.timeout)
-                    # FIXME: if timeout reached, ignore
+                    if emulator.reg_read(self.context.pc_const) != emu_end:
+                        log.critical("Timeout reached")
+                        shutil.rmtree(self._programs[0].data_dir)
+                        return (RunStatus.RUN_TIMEOUT, program_seed)
                 except UcError as e:
                     pc = emulator.reg_read(self.context.pc_const)
                     pc -= self.context.program_base
                     # NOTE: To debug: objdump -b binary -m i386:x86-64 -D 0_out.bin -M intel
-                    # XXX: debug
-                    print(
-                        f"RAX={emulator.reg_read(self.context.register_consts['rax']):x}"
+                    log.critical(
+                        f"Exception encountered at PC=0x{pc:x} with initial seed {self.initial_seed}:"
                     )
-                    print(
-                        f"RCX={emulator.reg_read(self.context.register_consts['rcx']):x}"
-                    )
-                    print(
-                        f"RSP={emulator.reg_read(self.context.register_consts['rsp']):x}"
-                    )
-                    print(
-                        f"RBP={emulator.reg_read(self.context.register_consts['rbp']):x}"
-                    )
-
-                    log.critical(f"Exception encountered at PC=0x{pc:x}:")
                     log.critical(
                         f"Failed to emulate {self._programs[idx].name}: {e}",
                         exc_info=True,
                     )
-                    exit(1)
+                    shutil.rmtree(self._programs[0].data_dir)
+                    return (RunStatus.RUN_EMU_EXC, program_seed)
+
             self._diff_vars()
-
-            # XXX: debug
-            print(f"Initial seed = {self.initial_seed}")
-
             if len(self._diff):
-                return True
-        return False
+                data_dir = self._programs[0].data_dir
+                dest = os.join(*data_dir.split('/')[:-1], str(program_seed))
+                os.rename(data_dir, dest)
+                return (RunStatus.RUN_DIFF, program_seed)
+
+        shutil.rmtree(self._programs[0].data_dir)
+        return (RunStatus.RUN_OK, program_seed)
 
     def _diff_vars(self) -> dict[Variable, list[bytes]]:
         """Updates self._diff with the variables that differ."""
@@ -156,7 +155,9 @@ class CSmithProvider(ProgramProvider):
 
     def get(self, experiment: Experiment) -> list[Program]:
         """Generate programs for all specified optimization levels."""
-        with TemporaryDirectory(prefix="/dev/shm/") as tmpdir:
+        with contextlib.nullcontext(
+            tempfile.mkdtemp(prefix=experiment.output_dir)
+        ) as tmpdir:
             # Remove `static` to make sure that function symbols are exported
             source_path = os.path.join(tmpdir, "source.c")
             self.gen_csmith_program(experiment, source_path)
@@ -210,7 +211,7 @@ class CSmithProvider(ProgramProvider):
                 with open(bin_path, "rb") as program:
                     # FIXME: find start address of target function
                     programs.append(
-                        Program(f"O{opt_level}", program.read(), None, None)
+                        Program(f"O{opt_level}", program.read(), None, [], None, tmpdir)
                     )
             return programs
 
@@ -223,6 +224,10 @@ class CSmithProvider(ProgramProvider):
                 str(experiment.randomizer.get()),
                 "--max-funcs",
                 "5",
+                "--max-pointer-depth",
+                "1",
+                "--max-array-dim",
+                "1",
                 "--no-global-variables",
                 "--nomain",
                 "--no-checksum",
@@ -281,11 +286,9 @@ class IRFuzzerProvider(ProgramProvider):
 
     def get(self, experiment: Experiment) -> list[Program]:
         # TODO: architecture handling?
-        # XXX: debug
-        #      original: TemporaryDirectory(prefix="/dev/shm/")
-        with contextlib.nullcontext(tempfile.mkdtemp()) as tmpdir:
-            # XXX: debug
-            print(tmpdir)
+        with contextlib.nullcontext(
+            tempfile.mkdtemp(prefix=experiment.output_dir)
+        ) as tmpdir:
             ir_bc_path = os.path.join(tmpdir, "out.bc")
             open(ir_bc_path, "w").close()
             # NOTE: IRFuzzer & llvm-project sempy branch
@@ -342,7 +345,9 @@ class IRFuzzerProvider(ProgramProvider):
 
                 with open(image_path, "rb") as image_file:
                     image = image_file.read()
-                programs.append(Program(f"O{opt_level}", image, ret_ty, arg_tys, 0))
+                programs.append(
+                    Program(f"O{opt_level}", image, ret_ty, arg_tys, 0, tmpdir)
+                )
             # TODO: make sure that addressspace is specified, so that alloca still allocates on *stack*
             #       alloca ref: https://llvm.org/docs/LangRef.html#alloca-instruction
             # TODO: llc: check if memcpy and other builtins are used
@@ -361,6 +366,7 @@ class IRFuzzerProvider(ProgramProvider):
         )
         with open(ir_ll_path, "r") as ir_ll_file:
             ir_ll_source_lines = [line.rstrip() for line in ir_ll_file.readlines()]
+        last_generated_fn = None
         for line in ir_ll_source_lines:
             m = re.fullmatch(match_signature, line)
             if not m:
@@ -368,14 +374,14 @@ class IRFuzzerProvider(ProgramProvider):
             fn_name = m.group("fn_name")
             ret_ty = self._parse_arg_tys(m.group("ret_ty"))[0]
             arg_list = m.group("arg_list")
-            if (
-                not arg_list
-                or fn_name in ["memcpy", "memset"]
-                or fn_name.startswith("safe_")
-            ):
+            if fn_name in ["memcpy", "memset"] or fn_name.startswith("safe_"):
                 continue
-            return (fn_name, ret_ty, self._parse_arg_tys(arg_list))
-        raise RuntimeError("All functions have empty parameter lists!")
+            last_generated_fn = (fn_name, ret_ty, self._parse_arg_tys(arg_list))
+            if arg_list:
+                return last_generated_fn
+        if not last_generated_fn:
+            raise RuntimeError("No generated functions found")
+        return last_generated_fn
 
     def _parse_arg_tys(self, arg_list: str) -> list[str]:
         args: list[str] = [ty.strip() for ty in arg_list.split(sep=",")]
@@ -423,11 +429,9 @@ class IRFuzzerProvider(ProgramProvider):
 
 class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
     def get(self, experiment: Experiment) -> list[Program]:
-        # TODO: replace prefix with an cmdline option,
-        #   and preserve the test directory with a difference
-        # with TemporaryDirectory(prefix="/dev/shm/") as tmpdir:
-        with contextlib.nullcontext(tempfile.mkdtemp(prefix="/dev/shm/")) as tmpdir:
-            print(tmpdir)
+        with contextlib.nullcontext(
+            tempfile.mkdtemp(prefix=experiment.output_dir)
+        ) as tmpdir:
             # TODO: organize some of the steps into inherited functions to remove redundant code
             # Generate source
             source_c_path = os.path.join(tmpdir, "out.c")
@@ -463,7 +467,11 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 )
 
             subprocess.run(["llvm-dis", source_bc_path])
-            fn_name, ret_ty, arg_tys = self.choose_ir_fn(experiment, source_ll_path)
+            try:
+                fn_name, ret_ty, arg_tys = self.choose_ir_fn(experiment, source_ll_path)
+            except:
+                shutil.rmtree(tmpdir)
+                raise
             programs: list[Program] = []
 
             for opt_level in experiment.opt_levels:
@@ -498,7 +506,11 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 subprocess.run(llc_args)
 
                 subprocess.run(["as", asm_path, "-o", elf_path])
-                fn_offset = self.get_fn_offset(elf_path, fn_name)
+                try:
+                    fn_offset = self.get_fn_offset(elf_path, fn_name)
+                except:
+                    shutil.rmtree(tmpdir)
+                    raise
 
                 subprocess.run(
                     ["objcopy", "-O", "binary", "-j", ".text", elf_path, image_path]
@@ -507,7 +519,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 with open(image_path, "rb") as image_file:
                     image = image_file.read()
                 programs.append(
-                    Program(f"O{opt_level}", image, ret_ty, arg_tys, fn_offset)
+                    Program(f"O{opt_level}", image, ret_ty, arg_tys, fn_offset, tmpdir)
                 )
 
             return programs
@@ -534,7 +546,7 @@ class FileProvider(ProgramProvider):
 
     def get(self, experiment: Experiment) -> list[Program]:
         return [
-            Program(filename, image, self._argtys, 0)
+            Program(filename, image, self._argtys, 0, 0, None)
             for filename, image in zip(self._filenames, self._images)
         ]
 

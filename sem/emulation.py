@@ -21,6 +21,7 @@ class Program:
     fn_ret_type: str  # function return type
     fn_arg_types: list[str]  # function argument types
     fn_start_offset: int  # address offset of the target function
+    data_dir: str  # directory where generated files are stored, delete if no difference found
 
 
 class EmulationContext(ABC):
@@ -207,9 +208,10 @@ class Randomizer(ABC):
         pass
 
     @abstractmethod
-    def next_round(self):
-        """Set the next random number as the new seed. Use when done with a
-        single round of emulation (i.e. emulated every sample once)."""
+    def next_round(self) -> int:
+        """Set the next random number as the new seed and return it.
+        Use when done with a single round of emulation (i.e. emulated every sample once).
+        """
         pass
 
 
@@ -338,6 +340,8 @@ class RandMemVar(Variable):
     def get(self, emulator: Uc):
         if not self._addr:
             self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
+        if self._addr == 0:
+            return None
         return emulator.mem_read(self._addr, self._size)
 
     @property
@@ -391,5 +395,6 @@ class DefaultRandomizer(Randomizer):
         self._random.seed(self._seed)
         pass
 
-    def next_round(self):
+    def next_round(self) -> int:
         self.seed = self.get()
+        return self.seed

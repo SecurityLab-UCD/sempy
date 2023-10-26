@@ -71,9 +71,6 @@ class X86EmulationContext(EmulationContext):
         # TODO: handle mode 32
         stack_map = self._mmaps["stack"]
         self._rsp = stack_map[0] + stack_map[1]
-        # XXX: debug
-        print(f"Initial RSP={self._rsp:x}")
-
 
         # integer / pointer arguments from left to right
         arg_gprs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -118,11 +115,7 @@ class X86EmulationContext(EmulationContext):
 
         # NOTE: Order is important. RandMemVars depend on the corresponding args.
         # FIXME: add stack randomization to emulate undef behavior
-        self._variables.extend(arg_gprs)
-        self._variables.extend(sse_gprs)
-        self._variables.extend(non_arg_gprs)
-        self._variables.extend(stack_vars)
-        self._variables.extend(heap_vars)
+        self._variables += arg_gprs + sse_gprs + non_arg_gprs + stack_vars + heap_vars
 
         # Registers that may contain return values: rax, rdx, ymm0
         # Don't need the exact Variable objects created earlier.
@@ -193,13 +186,11 @@ class X86EmulationContext(EmulationContext):
         for base, size, perms in self._mmaps.values():
             emulator.mem_map(base, size, perms)
 
+        assert self._mmaps["program"][1] >= len(program.image)
         emulator.mem_write(self.program_base, program.image)
         emulator.mem_write(bootstrap_base, bootstrap)
 
         def stack_setup(emulator: Uc, address, size, user_data):
-            # XXX: debug
-            print(f"Setting RSP={self._rsp:x}")
-
             emulator.reg_write(self.register_consts["rsp"], self._rsp)
 
         emulator.hook_add(UC_HOOK_CODE, stack_setup, None, emu_start, emu_start)
