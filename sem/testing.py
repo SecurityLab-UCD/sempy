@@ -20,7 +20,7 @@ from elftools.elf.elffile import ELFFile
 
 from .emulation import EmulationContext, Randomizer, VarAttr, Variable, Program
 
-log = logging.Logger(__name__)
+log = logging.Logger(__name__, logging.INFO)
 
 
 class ProgramProvider(ABC):
@@ -58,6 +58,7 @@ class Experiment:
     context: EmulationContext
     randomizer: Randomizer
     timeout: int
+    debug: bool
 
     def __post_init__(self):
         os.makedirs(self.output_dir, exist_ok=True)
@@ -65,6 +66,10 @@ class Experiment:
         self._programs: list[Program] = []
         self._emulators: list[Uc] = []
         self._diff: dict[Variable, list[bytes]] = {}
+        if self.debug:
+            log.setLevel(logging.DEBUG)
+        else:
+            log.setLevel(logging.CRITICAL)
 
     def run(self, program_seed: int = None) -> tuple[RunStatus, int]:
         """Returns (difference found, program seed)."""
@@ -75,7 +80,8 @@ class Experiment:
 
         try:
             self._programs = self.program_provider.get(self)
-        except:
+        except Exception as e:
+            log.error("Program generation exception", exc_info=True)
             return (RunStatus.RUN_GEN_EXC, program_seed)
 
         assert len(self._programs) >= 2
@@ -93,19 +99,14 @@ class Experiment:
                     self.randomizer.update(emulator, self.context)
                     emulator.emu_start(emu_begin, emu_end, self.timeout)
                     if emulator.reg_read(self.context.pc_const) != emu_end:
-                        log.critical("Timeout reached")
                         shutil.rmtree(self._programs[0].data_dir)
                         return (RunStatus.RUN_TIMEOUT, program_seed)
-                except UcError as e:
+                except UcError:
                     pc = emulator.reg_read(self.context.pc_const)
                     pc -= self.context.program_base
                     # NOTE: To debug: objdump -b binary -m i386:x86-64 -D 0_out.bin -M intel
-                    log.critical(
-                        f"Exception encountered at PC=0x{pc:x} with initial seed {self.initial_seed}:"
-                    )
-                    log.critical(
-                        f"Failed to emulate {self._programs[idx].name}: {e}",
-                        exc_info=True,
+                    log.error(
+                        f"Exception at PC=0x{pc:x} ({self._programs[idx].name}) with program seed {program_seed}", exc_info=True
                     )
                     shutil.rmtree(self._programs[0].data_dir)
                     return (RunStatus.RUN_EMU_EXC, program_seed)
@@ -113,7 +114,8 @@ class Experiment:
             self._diff_vars()
             if len(self._diff):
                 data_dir = self._programs[0].data_dir
-                dest = os.join(*data_dir.split('/')[:-1], str(program_seed))
+                dest = os.path.join(data_dir.rsplit('/', 1)[0], str(program_seed))
+                shutil.rmtree(dest, ignore_errors=True)
                 os.rename(data_dir, dest)
                 return (RunStatus.RUN_DIFF, program_seed)
 
@@ -381,9 +383,12 @@ class IRFuzzerProvider(ProgramProvider):
                 return last_generated_fn
         if not last_generated_fn:
             raise RuntimeError("No generated functions found")
+        # Settle for empty parameter list
         return last_generated_fn
 
     def _parse_arg_tys(self, arg_list: str) -> list[str]:
+        if not arg_list:
+            return []
         args: list[str] = [ty.strip() for ty in arg_list.split(sep=",")]
         arg_tys: list[str] = []
         for arg in args:
@@ -469,6 +474,8 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
             subprocess.run(["llvm-dis", source_bc_path])
             try:
                 fn_name, ret_ty, arg_tys = self.choose_ir_fn(experiment, source_ll_path)
+                with open(os.path.join(tmpdir, "chosen_function.txt"), "w") as f:
+                    f.write(fn_name)
             except:
                 shutil.rmtree(tmpdir)
                 raise
@@ -480,24 +487,25 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 elf_path = os.path.join(tmpdir, f"{opt_level}.elf")
                 image_path = os.path.join(tmpdir, f"{opt_level}.bin")
 
-                subprocess.run(
-                    [
-                        "opt",
-                        "-S",
-                        f"--passes=default<O{opt_level}>",
-                        "--disable-simplify-libcalls",
-                        source_bc_path,
-                        "-o",
-                        opt_ll_path,
-                    ]
-                )
+                # NOTE: for now, don't test middle end
+                # subprocess.run(
+                #     [
+                #         "opt",
+                #         "-S",
+                #         f"--passes=default<O{opt_level}>",
+                #         "--disable-simplify-libcalls",
+                #         source_bc_path,
+                #         "-o",
+                #         opt_ll_path,
+                #     ]
+                # )
 
                 arch = experiment.context.arch
                 llc_args = [
                     "llc",
                     f"-O{opt_level}",
                     f"-mtriple={arch if arch != 'x86' else 'x86_64'}--",
-                    opt_ll_path,
+                    source_bc_path,  # opt_ll_path,
                     "-o",
                     asm_path,
                 ]

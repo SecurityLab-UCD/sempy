@@ -5,23 +5,19 @@ import os
 import secrets
 import time
 from argparse import ArgumentParser, Namespace
-from binascii import hexlify
 from functools import partial
 
-from prettytable import PrettyTable
-from tqdm import tqdm
-from unicorn import UC_SECOND_SCALE, Uc, UcError
+from unicorn import UC_SECOND_SCALE
 
 from sem.emulation import (
     DefaultRandomizer,
     EmulationContext,
-    Randomizer,
-    VarAttr,
-    Variable,
 )
 from sem.testing import Experiment, ProgramProvider, RunStatus
 
-log = logging.Logger(__name__)
+logging.root.setLevel(logging.INFO)
+log = logging.Logger(__name__, logging.INFO)
+logging.Logger('pwnlib.asm').propagate = False
 
 
 def all_subclasses(cls):
@@ -43,6 +39,9 @@ def parse_args() -> Namespace:
         "-e", "--experiments", type=int, default=1, help="Number of parallel experiments (0 to use CPU count)"
     )
     parser.add_argument(
+        "--once", action="store_true", help="Emulate once and quit"
+    )
+    parser.add_argument(
         "-s", "--seed", type=int, default=secrets.randbits(64), help="Experiment seed"
     )
     parser.add_argument(
@@ -59,7 +58,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "-p",
         "--provider",
-        required=True,
+        default="mutate-csmith",
         choices=[Sub().name for Sub in all_subclasses(ProgramProvider)],
     )
     parser.add_argument(
@@ -69,6 +68,7 @@ def parse_args() -> Namespace:
         help="Seed for replicating a specific program",
     )
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
+    parser.add_argument("-d", "--debug", action="store_true", help="Show debug output")
     # -p file only
     parser.add_argument(
         "-t",
@@ -121,14 +121,29 @@ def fuzz(args: Namespace):
         context,
         DefaultRandomizer(),
         int(0.5 * UC_SECOND_SCALE),
+        args.debug
     )
 
     while True:
         status, program_seed = expr.run(args.program_seed)
-        if status == RunStatus.RUN_DIFF:
-            print(f"{program_seed}")
-            if not args.quiet:
-                print(expr.make_diff_table())
+        if not args.quiet:
+            match status:
+                case RunStatus.RUN_DIFF:
+                    print("Difference found")
+                    if args.debug:
+                        print(program_seed)
+                        print(expr.make_diff_table())
+                case RunStatus.RUN_OK:
+                    print("No difference found")
+                case RunStatus.RUN_EMU_EXC:
+                    print("Emulation exception")
+                case RunStatus.RUN_GEN_EXC:
+                    print("Program generation exception")
+                case RunStatus.RUN_TIMEOUT:
+                    print("Emulation timeout reached")
+        if args.once:
+            break
+    
 
 
 def main():
@@ -137,6 +152,9 @@ def main():
 
     if args.experiments == 0:
         args.experiments = multiprocessing.cpu_count()
+    elif args.experiments == 1:
+        fuzz(args)
+        return
 
     for _ in range(args.experiments):
         process = multiprocessing.Process(target=fuzz, args=(args,))

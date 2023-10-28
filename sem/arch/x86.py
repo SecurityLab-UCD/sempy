@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 import logging
-from math import ceil, log2
 
 from pwn import asm
-from unicorn import UC_HOOK_CODE, Uc, UcError
+from unicorn import UC_HOOK_CODE, Uc
 from unicorn.unicorn_const import UC_PROT_EXEC, UC_PROT_READ, UC_PROT_WRITE
 
 from ..emulation import (
@@ -20,6 +19,7 @@ log = logging.Logger(__name__)
 
 
 class X86EmulationContext(EmulationContext):
+    GPR_8 = ["al", "bl", "cl", "dl", "ah", "bh", "ch", "dh"]
     GPR_16 = ["ax", "bx", "cx", "dx", "si", "di"]
     GPR_32 = ["eax", "ebx", "ecx", "edx", "esi", "edi"]
     GPR_64 = [
@@ -123,6 +123,7 @@ class X86EmulationContext(EmulationContext):
             size = int(ret_ty[1:])
             reg = ""
             match size:
+                case 8: reg = "al"
                 case 16: reg = "ax"
                 case 32: reg = "eax"
                 case _: reg = "rax"
@@ -151,6 +152,8 @@ class X86EmulationContext(EmulationContext):
         raise ValueError(f"Mode not supported: {self.mode}")
 
     def register_size(self, name: str) -> int:
+        if name in self.GPR_8:
+            return 1
         if name in self.GPR_16:
             return 2
         if name in self.GPR_32:
