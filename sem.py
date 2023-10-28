@@ -61,7 +61,7 @@ def parse_args() -> Namespace:
         "-o", "--outdir", default="/dev/shm/sempy", help="Experiment output root"
     )
     parser.add_argument(
-        "-t", "--timeout", default=0, help="Experiment timeout (seconds)"
+        "-t", "--timeout", type=int, default=0, help="Experiment timeout (seconds)"
     )
     parser.add_argument(
         "-O",
@@ -131,7 +131,7 @@ def parse_args() -> Namespace:
     return args
 
 
-def fuzz(args: Namespace, seed: int, timeout: int = 0):
+def fuzz(args: Namespace, seed: int):
     start_time = time.time()
     context = EmulationContext.get(args.arch, args.mode)
     provider = next(
@@ -172,7 +172,9 @@ def fuzz(args: Namespace, seed: int, timeout: int = 0):
                     print("Emulation timeout reached")
         current_time = time.time()
         # No need for precise timeouts, since each expr.run() finishes within a second
-        if args.once or i == args.max_programs or current_time - start_time > timeout:
+        if args.once or i == args.max_programs:
+            break
+        if args.timeout != 0 and current_time - start_time > args.timeout:
             break
 
 
@@ -189,7 +191,7 @@ def main():
 
     for _ in range(args.experiments):
         process = multiprocessing.Process(
-            target=fuzz, args=(args, rand.get(), args.timeout)
+            target=fuzz, args=(args, rand.get())
         )
         time.sleep(0.5)  # suppress pwnlib term init error
         processes.append(process)
