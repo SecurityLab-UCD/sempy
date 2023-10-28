@@ -510,7 +510,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                     asm_path,
                 ]
                 if arch == "x86":
-                    llc_args.append("-mattr=+sse,+sse2")
+                    llc_args += ["-mattr=+sse,+sse2", "--x86-asm-syntax=intel"]
                 subprocess.run(llc_args)
 
                 subprocess.run(["as", asm_path, "-o", elf_path])

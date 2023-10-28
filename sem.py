@@ -5,6 +5,7 @@ import os
 import secrets
 import time
 from argparse import ArgumentParser, Namespace
+from itertools import count
 from functools import partial
 
 from unicorn import UC_SECOND_SCALE
@@ -17,7 +18,7 @@ from sem.testing import Experiment, ProgramProvider, RunStatus
 
 logging.root.setLevel(logging.INFO)
 log = logging.Logger(__name__, logging.INFO)
-logging.Logger('pwnlib.asm').propagate = False
+logging.Logger("pwnlib.asm").propagate = False
 
 
 def all_subclasses(cls):
@@ -33,19 +34,34 @@ def parse_args() -> Namespace:
     parser.add_argument("-a", "--arch", default="x86", help="Architecture (e.g. x86)")
     parser.add_argument("-m", "--mode", default="64", help="Emulation mode (e.g. 64)")
     parser.add_argument(
-        "-c", "--count", type=int, default=10, help="Times to repeat for a single round"
+        "-c",
+        "--count",
+        type=int,
+        default=10,
+        help="Fuzz a generated program/function COUNT times",
     )
     parser.add_argument(
-        "-e", "--experiments", type=int, default=1, help="Number of parallel experiments (0 to use CPU count)"
+        "-e",
+        "--experiments",
+        type=int,
+        default=1,
+        help="Number of parallel experiments (0 to use CPU count)",
     )
     parser.add_argument(
-        "--once", action="store_true", help="Emulate once and quit"
+        "-M",
+        "--max-programs",
+        type=int,
+        default=0,
+        help="Max generated programs per experiment (default: unlimited)",
     )
     parser.add_argument(
-        "-s", "--seed", type=int, default=secrets.randbits(64), help="Experiment seed"
+        "-s", "--seed", type=int, default=secrets.randbits(64), help="Initial seed"
     )
     parser.add_argument(
         "-o", "--outdir", default="/dev/shm/sempy", help="Experiment output root"
+    )
+    parser.add_argument(
+        "-t", "--timeout", default=0, help="Experiment timeout (seconds)"
     )
     parser.add_argument(
         "-O",
@@ -62,16 +78,24 @@ def parse_args() -> Namespace:
         choices=[Sub().name for Sub in all_subclasses(ProgramProvider)],
     )
     parser.add_argument(
+        "-r",
+        "--repro",
+        type=int,
+        default=None,
+        help="Reproduce a program seed (--program-seed REPRO --once --debug)",
+    )
+    parser.add_argument(
         "--program-seed",
         type=int,
-        nargs="?",
+        default=None,
         help="Seed for replicating a specific program",
     )
-    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
+    parser.add_argument("--once", action="store_true", help="Emulate once and quit")
     parser.add_argument("-d", "--debug", action="store_true", help="Show debug output")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
     # -p file only
     parser.add_argument(
-        "-t",
+        "-T",
         "--types",
         type=partial(str.split, sep=","),
         default=[],
@@ -98,12 +122,17 @@ def parse_args() -> Namespace:
             )
         if len(args.opt_levels) < 2:
             parser.error("Expected at least two optimization levels to compare")
+        if args.repro is not None:
+            args.program_seed = args.repro
+            args.debug = True
+            args.once = True
     args.outdir = os.path.join(args.outdir, "")
 
     return args
 
 
-def fuzz(args: Namespace):
+def fuzz(args: Namespace, seed: int, timeout: int = 0):
+    start_time = time.time()
     context = EmulationContext.get(args.arch, args.mode)
     provider = next(
         Sub() for Sub in all_subclasses(ProgramProvider) if Sub().name == args.provider
@@ -114,17 +143,17 @@ def fuzz(args: Namespace):
     expr = Experiment(
         f"{provider.name} -O{args.opt_levels}",
         args.outdir,
-        args.seed,
+        seed,
         provider,
         [*args.opt_levels],
         args.count,
         context,
         DefaultRandomizer(),
         int(0.5 * UC_SECOND_SCALE),
-        args.debug
+        args.debug,
     )
 
-    while True:
+    for i in count(start=1):
         status, program_seed = expr.run(args.program_seed)
         if not args.quiet:
             match status:
@@ -141,23 +170,27 @@ def fuzz(args: Namespace):
                     print("Program generation exception")
                 case RunStatus.RUN_TIMEOUT:
                     print("Emulation timeout reached")
-        if args.once:
+        current_time = time.time()
+        # No need for precise timeouts, since each expr.run() finishes within a second
+        if args.once or i == args.max_programs or current_time - start_time > timeout:
             break
-    
 
 
 def main():
     args = parse_args()
     processes = []
 
+    rand = DefaultRandomizer(args.seed)
     if args.experiments == 0:
         args.experiments = multiprocessing.cpu_count()
     elif args.experiments == 1:
-        fuzz(args)
+        fuzz(args, rand.get())
         return
 
     for _ in range(args.experiments):
-        process = multiprocessing.Process(target=fuzz, args=(args,))
+        process = multiprocessing.Process(
+            target=fuzz, args=(args, rand.get(), args.timeout)
+        )
         time.sleep(0.5)  # suppress pwnlib term init error
         processes.append(process)
         process.start()
