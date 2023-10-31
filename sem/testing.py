@@ -362,7 +362,7 @@ class IRFuzzerProvider(ProgramProvider):
         fn_name_regex: str = r"[a-zA-Z_][a-zA-Z_0-9]+",
     ) -> tuple[str, str, list[str]]:
         match_signature = (
-            r"^define .*? (?P<ret_ty>[^ ]+) @(?P<fn_name>"
+            r"^define.* (?P<ret_ty>[^ ]+) @(?P<fn_name>"
             + fn_name_regex
             + r")\((?P<arg_list>.*)\) .*{"
         )
