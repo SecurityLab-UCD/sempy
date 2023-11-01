@@ -152,8 +152,8 @@ class EmulationContext(ABC):
         """Get first-available context for given arch and mode."""
         # Run the subclass definitions
         archs = [name for _, name, _ in pkgutil.iter_modules(sem.arch.__path__)]
-        for arch in archs:
-            importlib.import_module(f"sem.arch.{arch}")
+        for ar in archs:
+            importlib.import_module(f"sem.arch.{ar}")
         # Find matching subclass
         for Context in EmulationContext.__subclasses__():
             try:
