@@ -105,7 +105,7 @@ class X86EmulationContext(EmulationContext):
                     )
                 unused_gpr += 1
             else:
-                stack_var = self._make_stack_arg((int(self._mode) + 7) // 8)
+                stack_var = self._make_stack_arg(int(self._mode))
                 stack_vars.append(stack_var)
                 if arg_type[0] == "p":
                     stack_var.attr |= VarAttr.PTR

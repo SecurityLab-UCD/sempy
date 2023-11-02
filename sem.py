@@ -171,9 +171,9 @@ def fuzz(args: Namespace, seed: int):
                 case RunStatus.RUN_TIMEOUT:
                     print("Emulation timeout reached")
         current_time = time.time()
-        # No need for precise timeouts, since each expr.run() finishes within a second
         if args.once or i == args.max_programs:
             break
+        # No need for precise timeouts, since each expr.run() finishes within a second
         if args.timeout != 0 and current_time - start_time > args.timeout:
             break
 
