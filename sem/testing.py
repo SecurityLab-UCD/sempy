@@ -530,7 +530,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                     raise
 
                 subprocess.run(
-                    ["objcopy", "-O", "binary", "-j", ".text", elf_path, image_path]
+                    ["llvm-objcopy", "-O", "binary", "-j", ".text", elf_path, image_path]
                 )
 
                 with open(image_path, "rb") as image_file:
