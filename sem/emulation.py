@@ -74,6 +74,12 @@ class EmulationContext(ABC):
 
     @property
     @abstractmethod
+    def mtriple(self) -> str:
+        """Return the llc mtriple option of the context (immutable)."""
+        pass
+
+    @property
+    @abstractmethod
     def mode(self) -> str:
         """Return the emulation mode of the context (e.g. 64)."""
         pass

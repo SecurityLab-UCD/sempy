@@ -160,6 +160,10 @@ class Arm64EmulationContext(EmulationContext):
     @property
     def arch(self) -> str:
         return "arm64"
+    
+    @property
+    def mtriple(self) -> str:
+        return "aarch64"
 
     @property
     def mode(self) -> str:

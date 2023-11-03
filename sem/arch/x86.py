@@ -211,6 +211,10 @@ class X86EmulationContext(EmulationContext):
     @property
     def arch(self) -> str:
         return "x86"
+    
+    @property
+    def mtriple(self) -> str:
+        return "x86_64"
 
     @property
     def mode(self) -> str:

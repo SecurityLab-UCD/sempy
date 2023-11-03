@@ -500,11 +500,12 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 #     ]
                 # )
 
+                mtriple = experiment.context.mtriple
                 arch = experiment.context.arch
                 llc_args = [
                     "llc",
                     f"-O{opt_level}",
-                    f"-mtriple={arch if arch != 'x86' else 'x86_64'}--",
+                    f"-mtriple={mtriple}",
                     source_bc_path,  # opt_ll_path,
                     "-o",
                     asm_path,
@@ -513,7 +514,15 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                     llc_args += ["-mattr=+sse,+sse2", "--x86-asm-syntax=intel"]
                 subprocess.run(llc_args)
 
-                subprocess.run(["as", asm_path, "-o", elf_path])
+                if arch == "x86":
+                    subprocess.run(["as", asm_path, "-o", elf_path])
+                else:
+                    subprocess.run(["clang", "-c", f"{asm_path}", "-v", 
+                                    f"--target={mtriple}", 
+                                    "-fuse-ld=lld",
+                                    "-fintegrated-as", 
+                                    "-o", elf_path])
+                
                 try:
                     fn_offset = self.get_fn_offset(elf_path, fn_name)
                 except:
