@@ -97,12 +97,11 @@ class Experiment:
                 emulator, emu_begin, emu_end = emu_info
                 try:
                     self.randomizer.update(emulator, self.context)
-                    currpc = emulator.reg_read(self.context.pc_const)
                     emulator.emu_start(emu_begin, emu_end, self.timeout)
                     if emulator.reg_read(self.context.pc_const) != emu_end:
                         shutil.rmtree(self._programs[0].data_dir)
                         return (RunStatus.RUN_TIMEOUT, program_seed)
-                except UcError as error:
+                except UcError:
                     pc = emulator.reg_read(self.context.pc_const)
                     pc -= self.context.program_base
                     # NOTE: To debug: objdump -b binary -m i386:x86-64 -D 0_out.bin -M intel
