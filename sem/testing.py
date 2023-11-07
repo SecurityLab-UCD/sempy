@@ -94,6 +94,14 @@ class Experiment:
         for _ in range(self.repeat_count):
             self.randomizer.next_round()
             for idx, emu_info in enumerate(emu_infos):
+                emulator = emu_info[0]
+                self.randomizer.update(emulator, self.context)
+
+            if self.debug:
+                print("Initial register dump:")
+                self._dump_registers()
+
+            for idx, emu_info in enumerate(emu_infos):
                 emulator, emu_begin, emu_end = emu_info
                 try:
                     self.randomizer.update(emulator, self.context)
@@ -111,7 +119,10 @@ class Experiment:
                     shutil.rmtree(self._programs[0].data_dir)
                     return (RunStatus.RUN_EMU_EXC, program_seed)
 
-            self._diff_vars()
+            self._diff = self._diff_vars()
+            if self.debug:
+                print("Final register dump:")
+                self._dump_registers()
             if len(self._diff):
                 data_dir = self._programs[0].data_dir
                 dest = os.path.join(data_dir.rsplit('/', 1)[0], str(program_seed))
@@ -122,19 +133,28 @@ class Experiment:
         shutil.rmtree(self._programs[0].data_dir)
         return (RunStatus.RUN_OK, program_seed)
 
-    def _diff_vars(self) -> dict[Variable, list[bytes]]:
-        """Updates self._diff with the variables that differ."""
-        res_vars: list[Variable] = self.context.result_variables
-        self._diff = {}
-        for var in res_vars:
+    def _diff_vars(self, vars: list[Variable] = []) -> dict[Variable, list[bytes]]:
+        """Returns the variables (result vars by default) that differ."""
+        if not vars:
+            vars: list[Variable] = self.context.result_variables
+        diff = {}
+        for var in vars:
             values = [var.get(emu) for emu in self._emulators]
             if all(values[0] == value for value in values[1:]):
                 continue
-            self._diff[var] = values
+            diff[var] = values
+        return diff
 
-    def make_diff_table(self):
+    def _dump_registers(self):
+        vars = self.context.variables
+        table = {var : [var.get(emu) for emu in self._emulators] for var in vars}
+        print(self.make_diff_table(table))
+
+    def make_diff_table(self, diff: dict[Variable, list[bytes]] = {}):
+        if not diff:
+            diff = self._diff
         table = PrettyTable(["Variable", *[p.name for p in self._programs]])
-        for var, values in self._diff.items():
+        for var, values in diff.items():
             if var.attr & VarAttr.REGISTER:
                 size = var.size * 2
                 values = [
@@ -145,7 +165,9 @@ class Experiment:
                 # Limit display size to 16 bytes of data (32 hex chars).
                 values = [hexlify(val).decode("ascii") for val in values]
                 values = [f"{val[:32]}..." if len(val) > 32 else val for val in values]
-            table.add_row([var.name, *values])
+            table.add_row([f"{var.name} ({var.__class__.__name__})", *values])
+        table.align = "r"
+        # table.sortby = "Variable"
         return table
 
 
@@ -284,7 +306,7 @@ class CSmithProvider(ProgramProvider):
 
 
 class IRFuzzerProvider(ProgramProvider):
-    MUTATION_ITERS = 10
+    MUTATION_ITERS = 100
 
     def get(self, experiment: Experiment) -> list[Program]:
         # TODO: architecture handling?
@@ -379,6 +401,8 @@ class IRFuzzerProvider(ProgramProvider):
             if fn_name in ["memcpy", "memset"] or fn_name.startswith("safe_"):
                 continue
             last_generated_fn = (fn_name, ret_ty, self._parse_arg_tys(arg_list))
+            if experiment.randomizer.choice([True, False]):
+                continue
             if arg_list:
                 return last_generated_fn
         if not last_generated_fn:
@@ -406,7 +430,17 @@ class IRFuzzerProvider(ProgramProvider):
                 else:
                     elemsize = int(ty[1:])
                 vecsize = int(m.group("veclen")) * elemsize
-                arg_tys.append(f"v{vecsize}")
+                arg_ty = f"v{vecsize}"
+
+                # TODO: implement support for element size
+                #   so instead of v512 we would have v16i32.
+                #   This is needed to handle
+                # if "signext" in arg:
+                #     arg_ty += ":s"
+                # elif "zeroext" in arg:
+                #     arg_ty += ":z"
+
+                arg_tys.append(arg_ty)
                 continue
 
             match_scalar_ty = r"^([ifu]\d+|float|half|double|ptr)"
@@ -415,15 +449,22 @@ class IRFuzzerProvider(ProgramProvider):
                 raise RuntimeError(f"Cannot parse type: {arg}")
 
             if m.group(0) == "double":
-                arg_tys.append("f64")
+                arg_ty = "f64"
             elif m.group(0) == "float":
-                arg_tys.append("f32")
+                arg_ty = "f32"
             elif m.group(0) == "half":
-                arg_tys.append("f16")
+                arg_ty = "f16"
             elif m.group(0) == "ptr":
-                arg_tys.append("p512")
+                arg_ty = "p512"
             else:
-                arg_tys.append(m.group(0))
+                arg_ty = m.group(0)
+
+            if "signext" in arg:
+                arg_ty += ":s"
+            elif "zeroext" in arg:
+                arg_ty += ":z"
+
+            arg_tys.append(arg_ty)
 
         return arg_tys
 
@@ -488,6 +529,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 image_path = os.path.join(tmpdir, f"{opt_level}.bin")
 
                 # NOTE: for now, don't test middle end
+                # TODO: add opt testing support as cmdline switch
                 # subprocess.run(
                 #     [
                 #         "opt",
