@@ -2,11 +2,12 @@
 import logging
 import importlib
 import pkgutil
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Flag, auto
-from typing import Union, Iterable
-from abc import ABC, abstractmethod
 from random import Random
+from struct import pack
+from typing import Union, Iterable
 
 import sem.arch
 from unicorn import Uc, UcError, unicorn_const
@@ -280,8 +281,9 @@ class Register(Variable):
             return False
 
     def get(self, emulator: Uc):
+        true_size = self._context.register_size(self._reg)
         return emulator.reg_read(self._context.register_consts[self._reg]).to_bytes(
-            self.size, "big"
+            true_size, "big"
         )
 
     @property
@@ -357,6 +359,66 @@ class RandMemVar(Variable):
     @property
     def size(self):
         return self._size
+
+
+class ZExtRegister(Register):
+    def __init__(
+        self,
+        name: str,
+        new_size: int,
+        context: EmulationContext,
+        attr: VarAttr = VarAttr.REGISTER,
+    ) -> None:
+        super().__init__(name, context, attr)
+        self._new_size = new_size
+
+    def set(self, data: bytes, emulator: Uc) -> bool:
+        if len(data) != self.size:
+            return False
+        data = int.from_bytes(data, "big")
+        try:
+            emulator.reg_write(
+                self._context.register_consts[self._reg], data
+            )
+            return True
+        except UcError:
+            return False
+
+    @Register.size.getter
+    def size(self):
+        return self._new_size
+
+
+class SExtRegister(Register):
+    def __init__(
+        self,
+        name: str,
+        new_size: int,
+        context: EmulationContext,
+        attr: VarAttr = VarAttr.REGISTER,
+    ) -> None:
+        super().__init__(name, context, attr)
+        self._new_size = new_size
+
+    def _sext(self, value):
+        sign_bit = 1 << (super().size * 8 - 1)
+        return (value & (sign_bit - 1)) - (value & sign_bit)
+
+    def set(self, data: bytes, emulator: Uc) -> bool:
+        if len(data) != self.size:
+            return False
+        data = self._sext(int.from_bytes(data, "big", signed=True))
+        try:
+            emulator.reg_write(
+                self._context.register_consts[self._reg], data
+            )
+            return True
+        except UcError:
+            return False
+
+    @Register.size.getter
+    def size(self):
+        return self._new_size
 
 
 class DefaultRandomizer(Randomizer):
