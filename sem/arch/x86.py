@@ -128,7 +128,7 @@ class X86EmulationContext(EmulationContext):
 
         # NOTE: Order is important. RandMemVars depend on pointer values of arg_gprs.
         # FIXME: add stack randomization to emulate undef behavior
-        self._variables += arg_gprs + sse_regs + non_arg_gprs + stack_vars + heap_vars
+        self._variables = arg_gprs + sse_regs + non_arg_gprs + stack_vars + heap_vars
 
         # Registers that may contain return values: rax, rdx, ymm0
         # Don't need the exact Variable objects created earlier.
