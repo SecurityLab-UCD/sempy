@@ -71,8 +71,7 @@ class Arm64EmulationContext(EmulationContext):
                             register, (int(arg[1:]) + 7) // 8, self
                         )
                     )
-                    continue
-                if int(arg[1:]) > 32:
+                elif int(arg[1:]) > 32:
                     register = Register(f"x{idx}", self)
                     register.attr |= VarAttr.FUNCTION_ARG
                 else: 
@@ -86,12 +85,13 @@ class Arm64EmulationContext(EmulationContext):
                     heap_vars.append(
                         RandMemVar(stack_var, (int(arg[1:]) + 7) // 8, self)
                     )
+                continue
             gprs_arg.append(register)
 
         # NOTE: Order is important. RandMemVars depend on the corresponding args.
         # TODO: 1. I need help with understanding the note
         #       2. SSE equivalent in aarch64?
-        self._variables += gprs_arg + stack_vars + heap_vars
+        self._variables = gprs_arg + stack_vars + heap_vars
 
         if ret_ty[0] in ["i", "u"]:
             size = int(ret_ty[1:])
