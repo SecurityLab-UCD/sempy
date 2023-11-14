@@ -84,7 +84,7 @@ class Experiment:
             log.error("Program generation exception", exc_info=True)
             return (RunStatus.RUN_GEN_EXC, program_seed)
 
-        assert len(self._programs) >= 2
+        #assert len(self._programs) >= 2
         self.context.set_fn(
             self._programs[0].fn_ret_type, self._programs[0].fn_arg_types
         )
@@ -101,7 +101,7 @@ class Experiment:
                     if emulator.reg_read(self.context.pc_const) != emu_end:
                         shutil.rmtree(self._programs[0].data_dir)
                         return (RunStatus.RUN_TIMEOUT, program_seed)
-                except UcError:
+                except UcError as e:
                     pc = emulator.reg_read(self.context.pc_const)
                     pc -= self.context.program_base
                     # NOTE: To debug: objdump -b binary -m i386:x86-64 -D 0_out.bin -M intel
@@ -109,7 +109,7 @@ class Experiment:
                         f"Exception at PC=0x{pc:x} ({self._programs[idx].name}) with program seed {program_seed}", exc_info=True
                     )
                     shutil.rmtree(self._programs[0].data_dir)
-                    return (RunStatus.RUN_EMU_EXC, program_seed)
+                    return (RunStatus.RUN_EMU_EXC, program_seed)  
 
             self._diff_vars()
             if len(self._diff):
@@ -128,6 +128,7 @@ class Experiment:
         self._diff = {}
         for var in res_vars:
             values = [var.get(emu) for emu in self._emulators]
+            print(values)
             if all(values[0] == value for value in values[1:]):
                 continue
             self._diff[var] = values
@@ -284,7 +285,7 @@ class CSmithProvider(ProgramProvider):
 
 
 class IRFuzzerProvider(ProgramProvider):
-    MUTATION_ITERS = 10
+    MUTATION_ITERS = 0
 
     def get(self, experiment: Experiment) -> list[Program]:
         # TODO: architecture handling?

@@ -52,7 +52,7 @@ class Arm64EmulationContext(EmulationContext):
         stack_map = self._mmaps["stack"]
         self._sp = stack_map[0] + stack_map[1]
 
-        gprs_arg = []
+        gprs_arg: list[Register] = []
 
         stack_vars: list[MemVar] = []
         heap_vars: list[RandMemVar] = []

@@ -378,6 +378,7 @@ class DefaultRandomizer(Randomizer):
                 data = data.to_bytes(variable.size, "big")
             else:
                 data = self._random.randbytes(variable.size)
+            print(f"{variable.name} {data}")
             variable.set(data, emulator)
         self.seed = self._last_seed
 
