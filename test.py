@@ -128,7 +128,7 @@ class TestImplementations(unittest.TestCase):
         super().__init__(methodName)
 
         self.contexts = [
-            #EmulationContext.get("x86", "64"),
+            EmulationContext.get("x86", "64"),
             EmulationContext.get("arm64", "arm"),
         ]
 
@@ -145,7 +145,7 @@ class TestImplementations(unittest.TestCase):
                 [],
                 1,
                 context,
-                StubRandomizer(seed = 0, preset_vals = [10, 20, 30, 40]),
+                StubRandomizer(seed = 0, preset_vals = [2000000]),
                 int(0.5 * UC_SECOND_SCALE),
                 True
             )
@@ -155,7 +155,7 @@ class TestImplementations(unittest.TestCase):
             test.run(program_seed)
 
 class StubRandomizer(DefaultRandomizer):
-    """A simple randomizer that just update variables with random bytes. Handles
+    """A simple randomizer that just update variables with preset bytes. Handles
     VarAttr.PTR."""
 
     def __init__(self, seed: int = 0, preset_vals = []) -> None:
@@ -173,39 +173,17 @@ class StubRandomizer(DefaultRandomizer):
                 # TODO: try to prevent overlapping
                 data = self._random.randrange(*context.ptr_range, 0x10)
                 data = data.to_bytes(variable.size, "big")
-            else:
+            elif variable.attr & VarAttr.MEMORY and \
+                variable.addr_src and variable.addr_src.attr & VarAttr.FUNCTION_ARG \
+                or variable.attr & VarAttr.FUNCTION_ARG:
                 data = self._preset_vals[self._index]
-                data = data.to_bytes(variable.size, "big")
+                data = data.to_bytes(variable.size, "little")
                 self._index += 1
+            else:
+                data = self._random.randbytes(variable.size)
             print(f"{variable.name} {data}")
             variable.set(data, emulator)
         self.seed = self._last_seed
-
-    def get(self) -> int:
-        return self._random.randint(0, 2**64 - 1)
-
-    def choice(self, obj: Iterable) -> any:
-        return self._random.choice(obj)
-
-    @property
-    def last_seed(self) -> Union[int, None]:
-        return self._last_seed
-
-    @property
-    def seed(self):
-        return self._seed
-
-    @seed.setter
-    def seed(self, value):
-        self._seed = value
-        self._random.seed(self._seed)
-        pass
-
-    def next_round(self) -> int:
-        self.seed = self.get()
-        return self.seed
-
-
 
 if __name__ == '__main__':
     unittest.main()

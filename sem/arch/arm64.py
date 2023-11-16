@@ -73,10 +73,10 @@ class Arm64EmulationContext(EmulationContext):
                     )
                 elif int(arg[1:]) > 32:
                     register = Register(f"x{idx}", self)
-                    register.attr |= VarAttr.FUNCTION_ARG
                 else: 
                     register = Register(f"w{idx}", self)
-                    register.attr |= VarAttr.FUNCTION_ARG
+                register.attr |= VarAttr.FUNCTION_ARG
+                gprs_arg.append(register)
             else:
                 stack_var = self._make_stack_arg()
                 stack_vars.append(stack_var)
@@ -85,8 +85,6 @@ class Arm64EmulationContext(EmulationContext):
                     heap_vars.append(
                         RandMemVar(stack_var, (int(arg[1:]) + 7) // 8, self)
                     )
-                continue
-            gprs_arg.append(register)
 
         # NOTE: Order is important. RandMemVars depend on the corresponding args.
         # TODO: 1. I need help with understanding the note

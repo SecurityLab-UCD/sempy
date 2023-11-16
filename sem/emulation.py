@@ -357,6 +357,10 @@ class RandMemVar(Variable):
     @property
     def size(self):
         return self._size
+    
+    @property
+    def addr_src(self):
+        return self._addr_src
 
 
 class DefaultRandomizer(Randomizer):
