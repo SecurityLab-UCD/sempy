@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
+import logging
+
+from pwn import asm
+from unicorn import UC_HOOK_CODE, Uc
+from unicorn.unicorn_const import UC_PROT_EXEC, UC_PROT_READ, UC_PROT_WRITE
+
 from ..emulation import (
     EmulationContext,
-    Variable,
     MemVar,
     RandMemVar,
     Register,
+    SExtRegister,
+    ZExtRegister,
     VarAttr,
+    Variable,
+    Program,
 )
-
-import logging
-from math import ceil, log2
-
-from pwn import asm
-from unicorn import Uc, UcError, UC_HOOK_CODE
-from unicorn.unicorn_const import UC_PROT_READ, UC_PROT_WRITE, UC_PROT_EXEC
 
 log = logging.Logger(__name__)
 
 
 class X86EmulationContext(EmulationContext):
+    GPR_8 = ["al", "bl", "cl", "dl", "ah", "bh", "ch", "dh"]
     GPR_16 = ["ax", "bx", "cx", "dx", "si", "di"]
     GPR_32 = ["eax", "ebx", "ecx", "edx", "esi", "edi"]
     GPR_64 = [
@@ -66,8 +69,10 @@ class X86EmulationContext(EmulationContext):
         self._rsp -= size_on_stack
         return MemVar(self._rsp, size, self, VarAttr.MEMORY | VarAttr.FUNCTION_ARG)
 
-    def set_arg_types(self, arg_types: list[str]):
+    def set_fn(self, ret_ty: str, arg_tys: list[str]):
         # TODO: handle mode 32
+        stack_map = self._mmaps["stack"]
+        self._rsp = stack_map[0] + stack_map[1]
 
         # integer / pointer arguments from left to right
         arg_gprs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -75,19 +80,26 @@ class X86EmulationContext(EmulationContext):
         arg_gprs = [Register(name, self) for name in arg_gprs]
         non_arg_gprs = [Register(name, self) for name in non_arg_gprs]
         # TODO: change to zmm when UE supports it
-        sse_gprs = [f"ymm{i}" for i in range(32)]
-        sse_gprs = [Register(name, self) for name in sse_gprs]
+        sse_regs = [f"ymm{i}" for i in range(32)]
+        sse_regs = [Register(name, self) for name in sse_regs]
 
         # index to current unused register in arg_gprs (int/ptr only)
         unused_gpr = 0
 
         stack_vars: list[MemVar] = []
         heap_vars: list[RandMemVar] = []
-        for arg_type in arg_types:
+
+        def size_of(arg_type: str):
+            return (int(arg_type[1:]) + 7) // 8
+
+        for arg_type in arg_tys:
+            arg_attr = arg_type.split(":")[1] if ":" in arg_type else ""
+            arg_type = arg_type.split(":")[0]
+
             # NOTE: Refer to https://www.uclibc.org/docs/psABI-x86_64.pdf for ABI
             # HACK: For now, assume that there won't be enough floating pointer & vector
             # arguments to fill all SSE registers.
-            if arg_type[0] not in ["i", "p"]:
+            if arg_type[0] not in ["i", "p", "u"]:
                 continue
             if unused_gpr < len(arg_gprs):
                 # NOTE: Also assuming that i<size> is within word size
@@ -97,33 +109,47 @@ class X86EmulationContext(EmulationContext):
                     # ceil arg_type bit size to byte size
                     heap_vars.append(
                         RandMemVar(
-                            arg_gprs[unused_gpr], (int(arg_type[1:]) + 7) // 8, self
+                            arg_gprs[unused_gpr], size_of(arg_type), self
                         )
                     )
+                elif arg_attr == "s":
+                    arg_gprs[unused_gpr] = SExtRegister(arg_gprs[unused_gpr]._reg, size_of(arg_type), self)
+                elif arg_attr == "z":
+                    arg_gprs[unused_gpr] = ZExtRegister(arg_gprs[unused_gpr]._reg, size_of(arg_type), self)
                 unused_gpr += 1
             else:
-                stack_var = self._make_stack_arg((int(self._mode) + 7) // 8)
+                stack_var = self._make_stack_arg(int(self._mode))
                 stack_vars.append(stack_var)
                 if arg_type[0] == "p":
                     stack_var.attr |= VarAttr.PTR
                     heap_vars.append(
-                        RandMemVar(stack_var, (int(arg_type[1:]) + 7) // 8, self)
+                        RandMemVar(stack_var, size_of(arg_type), self)
                     )
 
-        # NOTE: Order is important. RandMemVars depend on the corresponding args.
-        self._variables.extend(arg_gprs)
-        self._variables.extend(sse_gprs)
-        self._variables.extend(non_arg_gprs)
-        self._variables.extend(stack_vars)
-        self._variables.extend(heap_vars)
+        # NOTE: Order is important. RandMemVars depend on pointer values of arg_gprs.
+        # FIXME: add stack randomization to emulate undef behavior
+        self._variables = arg_gprs + sse_regs + non_arg_gprs + stack_vars + heap_vars
 
         # Registers that may contain return values: rax, rdx, ymm0
         # Don't need the exact Variable objects created earlier.
-        self._result_variables = [
-            Register("rax", self),
-            Register("rdx", self),
-            Register("ymm0", self),
-        ]
+        if ret_ty[0] in ["i", "u"]:
+            size = int(ret_ty[1:])
+            reg = ""
+            match size:
+                case 8: reg = "al"
+                case 16: reg = "ax"
+                case 32: reg = "eax"
+                case _: reg = "rax"
+            self._result_variables = [Register(reg, self)]
+        elif ret_ty[0] in ["v", "f"]:
+            self._result_variables = [Register("ymm0", self)]
+        elif ret_ty[0] == "p":
+            self._result_variables = [
+                RandMemVar(Register("rax", self), int(ret_ty[1:]), self)
+            ]
+        else:
+            log.warning(f"Unidentified return type {ret_ty}, defaulting to int")
+            self._result_variables = [Register("rax", self)]
         self._result_variables.extend(heap_vars)
 
     def allowed_registers(self) -> list[str]:
@@ -139,6 +165,8 @@ class X86EmulationContext(EmulationContext):
         raise ValueError(f"Mode not supported: {self.mode}")
 
     def register_size(self, name: str) -> int:
+        if name in self.GPR_8:
+            return 1
         if name in self.GPR_16:
             return 2
         if name in self.GPR_32:
@@ -153,7 +181,7 @@ class X86EmulationContext(EmulationContext):
             return 64
         raise ValueError(f"Register size not known: {name}")
 
-    def make_emulator(self, sample: bytes) -> tuple[Uc, int, int]:
+    def make_emulator(self, program: Program) -> tuple[Uc, int, int]:
         # TODO: track memory accesses (esp. writes) and add to self._result_variables
         emulator = Uc(self.arch_const, self.mode_const)
 
@@ -163,7 +191,7 @@ class X86EmulationContext(EmulationContext):
         emu_end = bootstrap_base + bootstrap_size
 
         bootstrap: bytes = asm(
-            f"call 0x{self.program_base:x}",
+            f"call 0x{self.program_base + program.fn_start_offset:x}",
             vma=bootstrap_base,
             arch="amd64",
             os="linux",
@@ -174,7 +202,8 @@ class X86EmulationContext(EmulationContext):
         for base, size, perms in self._mmaps.values():
             emulator.mem_map(base, size, perms)
 
-        emulator.mem_write(self.program_base, sample)
+        assert self._mmaps["program"][1] >= len(program.image)
+        emulator.mem_write(self.program_base, program.image)
         emulator.mem_write(bootstrap_base, bootstrap)
 
         def stack_setup(emulator: Uc, address, size, user_data):
@@ -202,7 +231,7 @@ class X86EmulationContext(EmulationContext):
 
     @mode.setter
     def mode(self, value: str):
-        if value == '64':
+        if value == "64":
             self._mode == value
         else:
             raise ValueError(f"Mode not supported for x86: {value}")
