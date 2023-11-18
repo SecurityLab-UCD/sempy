@@ -242,5 +242,9 @@ class TestImplementations(unittest.TestCase):
         self.setup_emulations("./testcases/test_stack_args.c", 
                               [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 
+    def test_one_stack_arg(self):
+        self.setup_emulations("./testcases/test_one_stack_arg.c", 
+                              [1, 2, 3, 4, 5, 6, 7])
+
 if __name__ == '__main__':
     unittest.main()
