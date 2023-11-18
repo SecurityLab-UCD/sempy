@@ -43,10 +43,7 @@ class Arm64EmulationContext(EmulationContext):
         self._variables: list[Variable] = []
         self._result_variables: list[Variable] = []
 
-    def _make_stack_arg(self):
-        # TODO: rsp always move by 8? 
-        self._sp -= 8
-        return MemVar(self._sp, 64, self, VarAttr.MEMORY | VarAttr.FUNCTION_ARG)
+     
     
     def set_fn(self, ret_ty: str, arg_tys: list[str]):
         stack_map = self._mmaps["stack"]
@@ -56,6 +53,10 @@ class Arm64EmulationContext(EmulationContext):
 
         stack_vars: list[MemVar] = []
         heap_vars: list[RandMemVar] = []
+
+        stack_vars_space = max((len(arg_tys) - 8) * 8, 0)
+        self._sp -= stack_vars_space
+
         for idx, arg in enumerate(arg_tys):
             ## TODO: what is "u"
             register = None
@@ -78,7 +79,8 @@ class Arm64EmulationContext(EmulationContext):
                 register.attr |= VarAttr.FUNCTION_ARG
                 gprs_arg.append(register)
             else:
-                stack_var = self._make_stack_arg()
+                stack_var = MemVar(self._sp + (idx - 8) * 8, 
+                                   8, self, VarAttr.MEMORY | VarAttr.FUNCTION_ARG)
                 stack_vars.append(stack_var)
                 if arg[0] == "p":
                     stack_var.attr |= VarAttr.PTR
