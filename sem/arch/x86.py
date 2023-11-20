@@ -71,8 +71,8 @@ class X86EmulationContext(EmulationContext):
 
     def set_fn(self, ret_ty: str, arg_tys: list[str]):
         # TODO: handle mode 32
-        stack_map = self._mmaps["stack"]
-        self._rsp = stack_map[0] + stack_map[1]
+        stack_base, stack_size, _ = self._mmaps["stack"]
+        self._rsp = stack_base + stack_size
 
         # integer / pointer arguments from left to right
         arg_gprs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -108,23 +108,23 @@ class X86EmulationContext(EmulationContext):
                     arg_gprs[unused_gpr].attr |= VarAttr.PTR
                     # ceil arg_type bit size to byte size
                     heap_vars.append(
-                        RandMemVar(
-                            arg_gprs[unused_gpr], size_of(arg_type), self
-                        )
+                        RandMemVar(arg_gprs[unused_gpr], size_of(arg_type), self)
                     )
                 elif arg_attr == "s":
-                    arg_gprs[unused_gpr] = SExtRegister(arg_gprs[unused_gpr]._reg, size_of(arg_type), self)
+                    arg_gprs[unused_gpr] = SExtRegister(
+                        arg_gprs[unused_gpr]._reg, size_of(arg_type), self
+                    )
                 elif arg_attr == "z":
-                    arg_gprs[unused_gpr] = ZExtRegister(arg_gprs[unused_gpr]._reg, size_of(arg_type), self)
+                    arg_gprs[unused_gpr] = ZExtRegister(
+                        arg_gprs[unused_gpr]._reg, size_of(arg_type), self
+                    )
                 unused_gpr += 1
             else:
                 stack_var = self._make_stack_arg(int(self._mode))
                 stack_vars.append(stack_var)
                 if arg_type[0] == "p":
                     stack_var.attr |= VarAttr.PTR
-                    heap_vars.append(
-                        RandMemVar(stack_var, size_of(arg_type), self)
-                    )
+                    heap_vars.append(RandMemVar(stack_var, size_of(arg_type), self))
 
         # NOTE: Order is important. RandMemVars depend on pointer values of arg_gprs.
         # FIXME: add stack randomization to emulate undef behavior
@@ -136,10 +136,14 @@ class X86EmulationContext(EmulationContext):
             size = int(ret_ty[1:])
             reg = ""
             match size:
-                case 8: reg = "al"
-                case 16: reg = "ax"
-                case 32: reg = "eax"
-                case _: reg = "rax"
+                case 8:
+                    reg = "al"
+                case 16:
+                    reg = "ax"
+                case 32:
+                    reg = "eax"
+                case _:
+                    reg = "rax"
             self._result_variables = [Register(reg, self)]
         elif ret_ty[0] in ["v", "f"]:
             self._result_variables = [Register("ymm0", self)]
