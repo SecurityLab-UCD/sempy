@@ -359,6 +359,10 @@ class RandMemVar(Variable):
     @property
     def size(self):
         return self._size
+    
+    @property
+    def addr_src(self):
+        return self._addr_src
 
 
 class ZExtRegister(Register):
@@ -440,6 +444,7 @@ class DefaultRandomizer(Randomizer):
                 data = data.to_bytes(variable.size, "big")
             else:
                 data = self._random.randbytes(variable.size)
+            print(f"{variable.name} {data}")
             variable.set(data, emulator)
         self.seed = self._last_seed
 

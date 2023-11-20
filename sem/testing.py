@@ -84,7 +84,7 @@ class Experiment:
             log.error("Program generation exception", exc_info=True)
             return (RunStatus.RUN_GEN_EXC, program_seed)
 
-        assert len(self._programs) >= 2
+        #assert len(self._programs) >= 2
         self.context.set_fn(
             self._programs[0].fn_ret_type, self._programs[0].fn_arg_types
         )
@@ -109,7 +109,7 @@ class Experiment:
                     if emulator.reg_read(self.context.pc_const) != emu_end:
                         shutil.rmtree(self._programs[0].data_dir)
                         return (RunStatus.RUN_TIMEOUT, program_seed)
-                except UcError:
+                except UcError as e:
                     pc = emulator.reg_read(self.context.pc_const)
                     pc -= self.context.program_base
                     # NOTE: To debug: objdump -b binary -m i386:x86-64 -D 0_out.bin -M intel
@@ -117,7 +117,7 @@ class Experiment:
                         f"Exception at PC=0x{pc:x} ({self._programs[idx].name}) with program seed {program_seed}", exc_info=True
                     )
                     shutil.rmtree(self._programs[0].data_dir)
-                    return (RunStatus.RUN_EMU_EXC, program_seed)
+                    return (RunStatus.RUN_EMU_EXC, program_seed)  
 
             self._diff = self._diff_vars()
             if self.debug:
@@ -140,6 +140,7 @@ class Experiment:
         diff = {}
         for var in vars:
             values = [var.get(emu) for emu in self._emulators]
+            print(values)
             if all(values[0] == value for value in values[1:]):
                 continue
             diff[var] = values
@@ -401,7 +402,7 @@ class IRFuzzerProvider(ProgramProvider):
             if fn_name in ["memcpy", "memset"] or fn_name.startswith("safe_"):
                 continue
             last_generated_fn = (fn_name, ret_ty, self._parse_arg_tys(arg_list))
-            if experiment.randomizer.choice([True, False]):
+            if experiment and experiment.randomizer.choice([True, False]):
                 continue
             if arg_list:
                 return last_generated_fn
