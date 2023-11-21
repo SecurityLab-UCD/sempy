@@ -1,4 +1,4 @@
-from sem.testing import Experiment, IRFuzzerProvider, MutateCSmithProvider, ProgramProvider, RunStatus
+from sem.testing import Experiment, MutateCSmithProvider
 from unicorn import UC_SECOND_SCALE
 from sem.emulation import (
     DefaultRandomizer,
@@ -6,20 +6,15 @@ from sem.emulation import (
     MemVar,
     Program,
     RandMemVar,
-    Randomizer,
     VarAttr,
 )
 import contextlib
-import importlib
 import logging
 import os
-import pkgutil
 from random import Random
 import shutil
 import subprocess
 import tempfile
-import inspect
-from typing import Iterable, Union
 import unittest
 from unicorn import Uc
 
@@ -55,7 +50,6 @@ class TestProgramProvider(MutateCSmithProvider):
             test_asm_path = os.path.join(tmpdir, "out.s")
             test_elf_path = os.path.join(tmpdir, "out.elf")
             image_path = os.path.join(tmpdir, "out.bin")
-            test_bc_path = os.path.join(tmpdir, "out.bc")
 
             shutil.copy(source_c_path, test_c_path)
 
@@ -80,7 +74,6 @@ class TestProgramProvider(MutateCSmithProvider):
                 stderr=subprocess.DEVNULL,
             )
             subprocess.run(["llvm-as", test_ll_path])
-            subprocess.run(["llvm-dis", test_bc_path])
 
             try:
                 fn_name, ret_ty, arg_tys = self.choose_ir_fn(
@@ -123,7 +116,8 @@ class TestProgramProvider(MutateCSmithProvider):
             )
             with open(image_path, "rb") as image_file:
                 image = image_file.read()
-            return Program(f"test_{context.arch}_{context.mode}", image, ret_ty, arg_tys, fn_offset, tmpdir)
+            return Program(f"test_{context.arch}_{context.mode}", 
+                           image, ret_ty, arg_tys, fn_offset, tmpdir)
 
 
 class StubRandomizer(DefaultRandomizer):
@@ -183,13 +177,15 @@ class TestImplementations(unittest.TestCase):
             EmulationContext.get("x86", "64"),
         ]
 
-    def setup_emulations(self, testPath, presetVals):
+    def setup_emulations(self, testdir,  presetVals):
         test_experiments = []
         test_results = []
         program_seed = 10
+        test_func_path = testdir + "/test_func.c"
+        test_driver_path = testdir + "/program.c"
 
         for context in self.contexts:
-            testProgramProvider = TestProgramProvider(testPath, context)
+            testProgramProvider = TestProgramProvider(test_func_path, context)
             testExperiment = Experiment(
                 f"test_{context.arch}_{context.mode}",
                 out_dir,
@@ -211,13 +207,16 @@ class TestImplementations(unittest.TestCase):
                 int.from_bytes(res_vars[0].get(emu), byteorder='big')
                 for emu in test._emulators])
 
-        compile_command = ['gcc', testPath, '-o', 'test']
+        compile_command = ['gcc', test_driver_path, '-o', 'test']
         subprocess.run(compile_command, check=True)
 
         # Execute the compiled program and collect its output
         execution_command = ['./test']
         process = subprocess.Popen(
-            execution_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            execution_command, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            text=True
         )
         output, _ = process.communicate()
         # shutil.rmtree('./test')
@@ -233,20 +232,18 @@ class TestImplementations(unittest.TestCase):
         return all(elem == input_list[0] for elem in input_list[1:])
 
     def test_pointer_args(self):
-        self.setup_emulations("./testcases/test_pointer_args.c", [2000000])
-        return
+        self.setup_emulations("./testcases/test_pointer_args", [2000000])
 
     def test_stack_args(self):
-        #self.setup_emulations("./testcases/test_stack_args.c",
-        #                      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-        return
+        self.setup_emulations("./testcases/test_stack_args",
+                              [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 
     def test_one_stack_arg_x86(self):
-        self.setup_emulations("./testcases/test_one_stack_arg_x86.c",
+        self.setup_emulations("./testcases/test_one_stack_arg_x86",
                               [1, 2, 3, 4, 5, 6, 7])
 
     def test_rand_stack_args(self):
-        self.setup_emulations("./testcases/test_rand_stack_args.c",
+        self.setup_emulations("./testcases/test_rand_stack_args",
                               [
                                   24047144,
                                   43228604,
@@ -258,6 +255,11 @@ class TestImplementations(unittest.TestCase):
                                   77008,
                                   -588857,
                                   -487722,])
+        
+    def test_floating_ret_val(self):
+        self.setup_emulations(
+            "./testcases/test_floating_ret_val",
+            [])
 
 if __name__ == '__main__':
     unittest.main()

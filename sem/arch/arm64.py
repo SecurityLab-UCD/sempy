@@ -21,8 +21,13 @@ from ..emulation import (
 log = logging.Logger(__name__)
 
 class Arm64EmulationContext(EmulationContext):
-    _GPR_32 = [f'w{i}' for i in range(31)]
-    _GPR_64 = [f'x{i}' for i in range(31)]
+    _GPR_INT_32 = [f'w{i}' for i in range(31)]
+    _GPR_INT_64 = [f'x{i}' for i in range(31)]
+    _GPR_FLOAT_8 = [f'b{i}' for i in range(31)]
+    _GPR_FLOAT_16 = [f'h{i}' for i in range(31)]
+    _GPR_FLOAT_32 = [f's{i}' for i in range(31)]
+    _GPR_FLOAT_64 = [f'd{i}' for i in range(31)]
+    _GPR_FLOAT_128 = [f'v{i}' for i in range(31)]
 
     def __init__(self) -> None:
         super().__init__()
@@ -119,13 +124,28 @@ class Arm64EmulationContext(EmulationContext):
         self._result_variables.extend(heap_vars)
 
     def allowed_registers(self) -> list[str]:
-        return [self._GPR_64.join(self._GPR_32)]
+        return [self._GPR_INT_32.join(self._GPR_INT_64)
+                                .join(self._GPR_FLOAT_8)
+                                .join(self._GPR_FLOAT_16)
+                                .join(self._GPR_FLOAT_32)
+                                .join(self._GPR_FLOAT_64)
+                                .join(self._GPR_FLOAT_128)]
 
     def register_size(self, name: str) -> int:
-        if name in self._GPR_32:
+        if name in self._GPR_INT_32:
             return 4
-        if name in self._GPR_64:
+        if name in self._GPR_INT_64:
             return 8
+        if name in self._GPR_FLOAT_8:
+            return 1
+        if name in self._GPR_FLOAT_16:
+            return 2
+        if name in self._GPR_FLOAT_32:
+            return 4
+        if name in self._GPR_FLOAT_64:
+            return 8
+        if name in self._GPR_FLOAT_128:
+            return 16
         raise ValueError(f"Register size not known: {name}")
 
     def make_emulator(self, program: Program) -> tuple[Uc, int, int]:
