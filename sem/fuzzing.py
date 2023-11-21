@@ -321,12 +321,12 @@ class IRFuzzerProvider(ProgramProvider):
             #       - all functions in source must have definitions (so that they can be emulated)
             #       - createFunctionDefinition: ArgNum in interval of [1, 8]
             # TODO: non-zero subprocess exit code handling
-            for _ in range(self.MUTATION_ITERS):
-                subprocess.run(
-                    ["MutatorDriver", ir_bc_path, str(experiment.randomizer.get())],
-                    cwd=tmpdir,
-                    stderr=subprocess.DEVNULL,
-                )
+            subprocess.run(
+                ["MutatorDriver", ir_bc_path, str(experiment.randomizer.get())],
+                env={"NUM_MUTATE": str(self.MUTATION_ITERS)},
+                cwd=tmpdir,
+                stderr=subprocess.DEVNULL,
+            )
             ir_ll_path = os.path.join(tmpdir, "out.ll")
             subprocess.run(["llvm-dis", ir_bc_path, "-o", ir_ll_path])
             name, ret_ty, arg_tys = self.choose_ir_fn(experiment, ir_ll_path)
@@ -506,12 +506,12 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
             )
             subprocess.run(["llvm-as", source_ll_path])
 
-            for _ in range(self.MUTATION_ITERS):
-                subprocess.run(
-                    ["MutatorDriver", source_bc_path, str(experiment.randomizer.get())],
-                    cwd=tmpdir,
-                    stderr=subprocess.DEVNULL,
-                )
+            subprocess.run(
+                ["MutatorDriver", source_bc_path, str(experiment.randomizer.get())],
+                env={"NUM_MUTATE": str(self.MUTATION_ITERS)},
+                cwd=tmpdir,
+                stderr=subprocess.DEVNULL,
+            )
 
             subprocess.run(["llvm-dis", source_bc_path])
             try:
