@@ -14,7 +14,7 @@ from sem.emulation import (
     DefaultRandomizer,
     EmulationContext,
 )
-from sem.testing import Experiment, ProgramProvider, RunStatus
+from sem.fuzzing import Experiment, ProgramProvider, RunStatus
 
 logging.root.setLevel(logging.INFO)
 log = logging.Logger(__name__, logging.INFO)
@@ -190,9 +190,7 @@ def main():
         return
 
     for _ in range(args.experiments):
-        process = multiprocessing.Process(
-            target=fuzz, args=(args, rand.get())
-        )
+        process = multiprocessing.Process(target=fuzz, args=(args, rand.get()))
         time.sleep(0.5)  # suppress pwnlib term init error
         processes.append(process)
         process.start()
