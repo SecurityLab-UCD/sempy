@@ -114,7 +114,8 @@ class Experiment:
                     pc -= self.context.program_base
                     # NOTE: To debug: objdump -b binary -m i386:x86-64 -D 0_out.bin -M intel
                     log.error(
-                        f"Exception at PC=0x{pc:x} ({self._programs[idx].name}) with program seed {program_seed}", exc_info=True
+                        f"Exception at PC=0x{pc:x} ({self._programs[idx].name}) with program seed {program_seed}",
+                        exc_info=True,
                     )
                     shutil.rmtree(self._programs[0].data_dir)
                     return (RunStatus.RUN_EMU_EXC, program_seed)  
@@ -125,7 +126,7 @@ class Experiment:
                 self._dump_registers()
             if len(self._diff):
                 data_dir = self._programs[0].data_dir
-                dest = os.path.join(data_dir.rsplit('/', 1)[0], str(program_seed))
+                dest = os.path.join(data_dir.rsplit("/", 1)[0], str(program_seed))
                 shutil.rmtree(dest, ignore_errors=True)
                 os.rename(data_dir, dest)
                 return (RunStatus.RUN_DIFF, program_seed)
@@ -148,7 +149,7 @@ class Experiment:
 
     def _dump_registers(self):
         vars = self.context.variables
-        table = {var : [var.get(emu) for emu in self._emulators] for var in vars}
+        table = {var: [var.get(emu) for emu in self._emulators] for var in vars}
         print(self.make_diff_table(table))
 
     def make_diff_table(self, diff: dict[Variable, list[bytes]] = {}):
