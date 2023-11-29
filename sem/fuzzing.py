@@ -45,6 +45,14 @@ class RunStatus(IntEnum):
     RUN_EMU_EXC = auto()
 
 
+is_debug = False
+
+
+def rmdir(dir: str):
+    if dir and not is_debug:
+        shutil.rmtree(dir, True)
+
+
 @dataclass
 class Experiment:
     """Class for testing compiler optimization passes."""
@@ -61,11 +69,13 @@ class Experiment:
     debug: bool
 
     def __post_init__(self):
+        global is_debug
         os.makedirs(self.output_dir, exist_ok=True)
         self.randomizer.seed = self.initial_seed
         self._programs: list[Program] = []
         self._emulators: list[Uc] = []
         self._diff: dict[Variable, list[bytes]] = {}
+        is_debug = self.debug
         if self.debug:
             log.setLevel(logging.DEBUG)
         else:
@@ -107,17 +117,21 @@ class Experiment:
                     self.randomizer.update(emulator, self.context)
                     emulator.emu_start(emu_begin, emu_end, self.timeout)
                     if emulator.reg_read(self.context.pc_const) != emu_end:
-                        shutil.rmtree(self._programs[0].data_dir)
+                        rmdir(self._programs[0].data_dir)
                         return (RunStatus.RUN_TIMEOUT, program_seed)
-                except UcError:
+                except UcError as e:
                     pc = emulator.reg_read(self.context.pc_const)
                     pc -= self.context.program_base
+                    if self.debug:
+                        print("Exception register dump:")
+                        self._dump_registers()
+                        print(e)
                     # NOTE: To debug: objdump -b binary -m i386:x86-64 -D 0_out.bin -M intel
                     log.error(
                         f"Exception at PC=0x{pc:x} ({self._programs[idx].name}) with program seed {program_seed}",
                         exc_info=True,
                     )
-                    shutil.rmtree(self._programs[0].data_dir)
+                    rmdir(self._programs[0].data_dir)
                     return (RunStatus.RUN_EMU_EXC, program_seed)
 
             self._diff = self._diff_vars()
@@ -127,11 +141,11 @@ class Experiment:
             if len(self._diff):
                 data_dir = self._programs[0].data_dir
                 dest = os.path.join(data_dir.rsplit("/", 1)[0], str(program_seed))
-                shutil.rmtree(dest, ignore_errors=True)
+                rmdir(dest)
                 os.rename(data_dir, dest)
                 return (RunStatus.RUN_DIFF, program_seed)
 
-        shutil.rmtree(self._programs[0].data_dir)
+        rmdir(self._programs[0].data_dir)
         return (RunStatus.RUN_OK, program_seed)
 
     def _diff_vars(self, vars: list[Variable] = []) -> dict[Variable, list[bytes]]:
@@ -170,6 +184,43 @@ class Experiment:
         table.align = "r"
         # table.sortby = "Variable"
         return table
+
+
+def get_sym_offset(elf_path, sym_name, is_fn=True):
+    with open(elf_path, "rb") as file:
+        elf = ELFFile(file)
+
+        # Find the .text section
+        section = None
+        section_name = ".text" if is_fn else ".bss"
+        for elf_section in elf.iter_sections():
+            if elf_section.name == section_name:
+                section = elf_section
+                break
+
+        if section is None:
+            raise ValueError(
+                f"The {section_name} section was not found in the ELF file."
+            )
+
+        # Find the address of the specified function
+        sym_address = None
+        for elf_section in elf.iter_sections():
+            if elf_section.name != ".symtab":
+                continue
+            for symbol in elf_section.iter_symbols():
+                if symbol.name == sym_name:
+                    sym_address = symbol["st_value"]
+                    break
+
+        if sym_address is None:
+            raise ValueError(f"Symbol '{sym_name}' not found in the symbol table.")
+
+        # Calculate the offset from the start of section
+        offset = sym_address
+        if is_fn:
+            offset -= section["sh_addr"]
+        return offset
 
 
 class CSmithProvider(ProgramProvider):
@@ -270,37 +321,6 @@ class CSmithProvider(ProgramProvider):
         with open(output_path, "w") as source_file:
             source_file.write(source)
 
-    def get_fn_offset(self, elf_path, fn_name):
-        with open(elf_path, "rb") as file:
-            elf = ELFFile(file)
-
-            # Find the .text section
-            text_section = None
-            for section in elf.iter_sections():
-                if section.name == ".text":
-                    text_section = section
-                    break
-
-            if text_section is None:
-                raise ValueError("The .text section was not found in the ELF file.")
-
-            # Find the address of the specified function
-            function_address = None
-            for section in elf.iter_sections():
-                if section.name != ".symtab":
-                    continue
-                for symbol in section.iter_symbols():
-                    if symbol.name == fn_name:
-                        function_address = symbol["st_value"]
-                        break
-
-            if function_address is None:
-                raise ValueError(f"Function '{fn_name}' not found in the symbol table.")
-
-            # Calculate the offset from the start of .text section
-            offset = function_address - text_section["sh_addr"]
-            return offset
-
     @property
     def name(self) -> str:
         return "csmith"
@@ -334,7 +354,6 @@ class IRFuzzerProvider(ProgramProvider):
             programs: list[Program] = []
             for opt_level in experiment.opt_levels:
                 ir_opt_ll_path = os.path.join(tmpdir, f"{opt_level}_out.ll")
-                # FIXME: add a call to f so that opt doesn't consider f unreachable
                 subprocess.run(
                     [
                         "opt",
@@ -506,12 +525,17 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
             )
             subprocess.run(["llvm-as", source_ll_path])
 
-            subprocess.run(
+            irfuzzer_env = os.environ.copy()
+            irfuzzer_env["NUM_MUTATE"] = str(self.MUTATION_ITERS)
+            mutation = subprocess.run(
                 ["MutatorDriver", source_bc_path, str(experiment.randomizer.get())],
-                env={"NUM_MUTATE": str(self.MUTATION_ITERS)},
+                env=irfuzzer_env,
                 cwd=tmpdir,
                 stderr=subprocess.DEVNULL,
             )
+            if mutation.returncode != 0:
+                rmdir(tmpdir)
+                raise RuntimeError(mutation.stderr)
 
             subprocess.run(["llvm-dis", source_bc_path])
             try:
@@ -519,13 +543,23 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 with open(os.path.join(tmpdir, "chosen_function.txt"), "w") as f:
                     f.write(fn_name)
             except:
-                shutil.rmtree(tmpdir)
+                rmdir(tmpdir)
                 raise
             programs: list[Program] = []
 
+            emi_ll_path = os.path.join(tmpdir, "emi_false.ll")
+            emi_o_path = os.path.join(tmpdir, "emi_false.o")
+            with open(emi_ll_path, "w") as f:
+                f.write("@emi_false = global i1 0")
+            arch = experiment.context.arch
+            llc_triple = f"-mtriple={arch if arch != 'x86' else 'x86_64'}--"
+            subprocess.run(
+                ["llc", "-filetype=obj", llc_triple, emi_ll_path, f"-o", emi_o_path]
+            )
             for opt_level in experiment.opt_levels:
-                opt_ll_path = os.path.join(tmpdir, f"{opt_level}.ll")
-                asm_path = os.path.join(tmpdir, f"{opt_level}.s")
+                # opt_ll_path = os.path.join(tmpdir, f"{opt_level}.ll")
+                # asm_path = os.path.join(tmpdir, f"{opt_level}.s")
+                o_path = os.path.join(tmpdir, f"{opt_level}.o")
                 elf_path = os.path.join(tmpdir, f"{opt_level}.elf")
                 image_path = os.path.join(tmpdir, f"{opt_level}.bin")
 
@@ -543,24 +577,29 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 #     ]
                 # )
 
-                arch = experiment.context.arch
                 llc_args = [
                     "llc",
+                    "-filetype=obj",
                     f"-O{opt_level}",
-                    f"-mtriple={arch if arch != 'x86' else 'x86_64'}--",
+                    "--disable-simplify-libcalls",
+                    llc_triple,
                     source_bc_path,  # opt_ll_path,
                     "-o",
-                    asm_path,
+                    o_path,
                 ]
                 if arch == "x86":
                     llc_args += ["-mattr=+sse,+sse2", "--x86-asm-syntax=intel"]
-                subprocess.run(llc_args)
+                subprocess.run(llc_args, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ["ld", emi_o_path, o_path, "-o", elf_path],
+                    stderr=subprocess.DEVNULL,
+                )
 
-                subprocess.run(["as", asm_path, "-o", elf_path])
                 try:
-                    fn_offset = self.get_fn_offset(elf_path, fn_name)
+                    fn_offset = get_sym_offset(elf_path, fn_name)
+                    emi_false_offset = get_sym_offset(elf_path, "emi_false", False)
                 except:
-                    shutil.rmtree(tmpdir)
+                    rmdir(tmpdir)
                     raise
 
                 subprocess.run(
@@ -570,7 +609,15 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 with open(image_path, "rb") as image_file:
                     image = image_file.read()
                 programs.append(
-                    Program(f"O{opt_level}", image, ret_ty, arg_tys, fn_offset, tmpdir)
+                    Program(
+                        f"O{opt_level}",
+                        image,
+                        ret_ty,
+                        arg_tys,
+                        fn_offset,
+                        tmpdir,
+                        {emi_false_offset: b"\x00"},
+                    )
                 )
 
             return programs
@@ -585,19 +632,29 @@ class FileProvider(ProgramProvider):
         super().__init__()
         self._filenames: list[str] = []
         self._images: list[bytes] = []
-        self._argtys: list[str] = []
+        self._arg_tys: list[str] = []
+        self._offset = 0
 
-    def set_files(self, filenames: list[str], argtys: list[str]):
+    def set_files(self, filenames: list[str], argtys: list[str], fn_name: str):
         self._filenames = filenames
         self._images: list[bytes] = []
         for filename in self._filenames:
             with open(filename, "rb") as file:
                 self._images.append(file.read())
-        self._argtys = argtys
+        self._ret_ty = argtys[0]
+        self._arg_tys = argtys[1:]
+        self._fn_name = fn_name
 
     def get(self, experiment: Experiment) -> list[Program]:
         return [
-            Program(filename, image, self._argtys, 0, 0, None)
+            Program(
+                filename,
+                image,
+                self._ret_ty,
+                self._arg_tys,
+                get_sym_offset(filename.replace(".bin", ".elf"), self._fn_name),
+                None,
+            )
             for filename, image in zip(self._filenames, self._images)
         ]
 

@@ -100,7 +100,13 @@ def parse_args() -> Namespace:
         type=partial(str.split, sep=","),
         default=[],
         nargs="?",
-        help="Function argument types (format: /[iufvp]\\d+/) (e.g. i64)",
+        help="Function return and argument types (format: /[iufvp]\\d+/) (e.g. i64)",
+    )
+    parser.add_argument(
+        "--fn-name",
+        type=str,
+        nargs="?",
+        help="Function name for file provider",
     )
     parser.add_argument("files", default=[], nargs="*", help="Files to compare")
     args = parser.parse_args()
@@ -108,6 +114,10 @@ def parse_args() -> Namespace:
     if args.provider == "file":
         if len(args.files) < 2:
             parser.error("Expected two or more files to compare")
+        if len(args.types) < 1:
+            parser.error("Return type is required!")
+        if not args.fn_name:
+            parser.error("Function name is required!")
         for arg_type in args.types:
             if len(arg_type) < 2:
                 parser.error(f"Argument type too short: {arg_type}")
@@ -138,7 +148,7 @@ def fuzz(args: Namespace, seed: int):
         Sub() for Sub in all_subclasses(ProgramProvider) if Sub().name == args.provider
     )
     if provider.name == "file":
-        provider.set_files(args.files, args.types)
+        provider.set_files(args.files, args.types, args.fn_name)
 
     expr = Experiment(
         f"{provider.name} -O{args.opt_levels}",

@@ -3,7 +3,7 @@ import logging
 import importlib
 import pkgutil
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Flag, auto
 from random import Random
 from struct import pack
@@ -23,6 +23,7 @@ class Program:
     fn_arg_types: list[str]  # function argument types
     fn_start_offset: int  # address offset of the target function
     data_dir: str  # directory where generated files are stored, delete if no difference found
+    consts: dict[int, bytes] = field(default_factory=lambda: {})
 
 
 class EmulationContext(ABC):
@@ -371,9 +372,7 @@ class ZExtRegister(Register):
             return False
         data = int.from_bytes(data, "big")
         try:
-            emulator.reg_write(
-                self._context.register_consts[self._reg], data
-            )
+            emulator.reg_write(self._context.register_consts[self._reg], data)
             return True
         except UcError:
             return False
@@ -403,9 +402,7 @@ class SExtRegister(Register):
             return False
         data = self._sext(int.from_bytes(data, "big", signed=True))
         try:
-            emulator.reg_write(
-                self._context.register_consts[self._reg], data
-            )
+            emulator.reg_write(self._context.register_consts[self._reg], data)
             return True
         except UcError:
             return False
