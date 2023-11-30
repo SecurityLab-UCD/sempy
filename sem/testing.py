@@ -141,7 +141,6 @@ class Experiment:
         diff = {}
         for var in vars:
             values = [var.get(emu) for emu in self._emulators]
-            print(values)
             if all(values[0] == value for value in values[1:]):
                 continue
             diff[var] = values
@@ -556,6 +555,8 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 ]
                 if arch == "x86":
                     llc_args += ["-mattr=+sse,+sse2", "--x86-asm-syntax=intel"]
+                if arch == "arm64":
+                    llc_args += ["-mattr=fp-armv8"]
                 subprocess.run(llc_args)
 
                 if arch == "x86":

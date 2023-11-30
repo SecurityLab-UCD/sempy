@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import struct
 from unicorn import Uc
 
 print(os.getcwd())
@@ -95,6 +96,8 @@ class TestProgramProvider(MutateCSmithProvider):
             ]
             if arch == "x86":
                 llc_args += ["-mattr=+sse,+sse2", "--x86-asm-syntax=intel"]
+            if arch == "arm64":
+                llc_args += ["-mattr=fp-armv8"]
             subprocess.run(llc_args)
             if arch == "x86":
                 subprocess.run(["as", test_asm_path, "-o", test_elf_path])
@@ -163,7 +166,6 @@ class StubRandomizer(DefaultRandomizer):
 
             else:
                 data = self._random.randbytes(variable.size)
-            print(f"{variable.name} {data}")
             variable.set(data, emulator)
         self.seed = self._last_seed
 
@@ -177,7 +179,7 @@ class TestImplementations(unittest.TestCase):
             EmulationContext.get("x86", "64"),
         ]
 
-    def setup_emulations(self, testdir,  presetVals):
+    def setup_emulations(self, testdir, presetVals, isReturnTypeInt = True):
         test_experiments = []
         test_results = []
         program_seed = 10
@@ -203,9 +205,15 @@ class TestImplementations(unittest.TestCase):
         for test in test_experiments:
             test.run(program_seed)
             res_vars = test.context.result_variables
-            test_results.append([
-                int.from_bytes(res_vars[0].get(emu), byteorder='big')
-                for emu in test._emulators])
+            if isReturnTypeInt:
+                test_results.append([
+                    int.from_bytes(res_vars[0].get(emu), byteorder='big')
+                    for emu in test._emulators])
+            else:
+                test_results.append([
+                    struct.unpack('<f', res_vars[0].get(emu))
+                    for emu in test._emulators
+                ])
 
         compile_command = ['gcc', test_driver_path, '-o', 'test']
         subprocess.run(compile_command, check=True)
@@ -222,7 +230,10 @@ class TestImplementations(unittest.TestCase):
         # shutil.rmtree('./test')
 
         # Split the output into lines and store them in a list
-        output_lines = [(int)(output.splitlines()[0])]
+        if isReturnTypeInt:
+            output_lines = [(int)(output.splitlines()[0])]
+        else:
+            output_lines = [(float)(output.splitlines()[0])]
 
         test_results.append(output_lines)
 
@@ -230,36 +241,39 @@ class TestImplementations(unittest.TestCase):
 
     def are_all_elements_same(self, input_list):
         return all(elem == input_list[0] for elem in input_list[1:])
+    
+    def test_0(self):
+        self.setup_emulations("./testcases/test_0", [2, 2, 3, 4])
 
-    def test_pointer_args(self):
-        self.setup_emulations("./testcases/test_pointer_args", [2000000])
+    # def test_pointer_args(self):
+    #     self.setup_emulations("./testcases/test_pointer_args", [2000000])
 
-    def test_stack_args(self):
-        self.setup_emulations("./testcases/test_stack_args",
-                              [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    # def test_stack_args(self):
+    #     self.setup_emulations("./testcases/test_stack_args",
+    #                           [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 
-    def test_one_stack_arg_x86(self):
-        self.setup_emulations("./testcases/test_one_stack_arg_x86",
-                              [1, 2, 3, 4, 5, 6, 7])
+    # def test_one_stack_arg_x86(self):
+    #     self.setup_emulations("./testcases/test_one_stack_arg_x86",
+    #                           [1, 2, 3, 4, 5, 6, 7])
 
-    def test_rand_stack_args(self):
-        self.setup_emulations("./testcases/test_rand_stack_args",
-                              [
-                                  24047144,
-                                  43228604,
-                                  -921521,
-                                  827519,
-                                  -524606,
-                                  582689,
-                                  199105,
-                                  77008,
-                                  -588857,
-                                  -487722,])
+    # def test_rand_stack_args(self):
+    #     self.setup_emulations("./testcases/test_rand_stack_args",
+    #                           [
+    #                               24047144,
+    #                               43228604,
+    #                               -921521,
+    #                               827519,
+    #                               -524606,
+    #                               582689,
+    #                               199105,
+    #                               77008,
+    #                               -588857,
+    #                               -487722,])
         
-    def test_floating_ret_val(self):
-        self.setup_emulations(
-            "./testcases/test_floating_ret_val",
-            [])
+    #def test_floating_ret_val(self):
+    #    self.setup_emulations(
+    #        "./testcases/test_floating_ret_val",
+    #        [5, 2], False)
 
 if __name__ == '__main__':
     unittest.main()

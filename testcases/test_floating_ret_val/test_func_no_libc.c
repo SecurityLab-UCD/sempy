@@ -1,6 +1,6 @@
 float func_1(
-    float dividend,
-    float divisor
+    int dividend,
+    int divisor
 )
 {    
     float res = dividend / divisor;

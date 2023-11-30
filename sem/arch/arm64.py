@@ -23,11 +23,11 @@ log = logging.Logger(__name__)
 class Arm64EmulationContext(EmulationContext):
     _GPR_INT_32 = [f'w{i}' for i in range(31)]
     _GPR_INT_64 = [f'x{i}' for i in range(31)]
-    _GPR_FLOAT_8 = [f'b{i}' for i in range(31)]
-    _GPR_FLOAT_16 = [f'h{i}' for i in range(31)]
-    _GPR_FLOAT_32 = [f's{i}' for i in range(31)]
-    _GPR_FLOAT_64 = [f'd{i}' for i in range(31)]
-    _GPR_FLOAT_128 = [f'v{i}' for i in range(31)]
+    _FPR_8 = [f'b{i}' for i in range(31)]
+    _FPR_16 = [f'h{i}' for i in range(31)]
+    _FPR_32 = [f's{i}' for i in range(31)]
+    _FPR_64 = [f'd{i}' for i in range(31)]
+    _FPR_128 = [f'q{i}' for i in range(31)]
 
     def __init__(self) -> None:
         super().__init__()
@@ -53,7 +53,8 @@ class Arm64EmulationContext(EmulationContext):
     def set_fn(self, ret_ty: str, arg_tys: list[str]):
         stack_map = self._mmaps["stack"]
         self._sp = stack_map[0] + stack_map[1]
-
+        all_gprs = [Register(gpr, self) for gpr in self._GPR_INT_64]
+        all_fprs = [Register(fpr, self) for fpr in self._FPR_128]
         gprs_arg: list[Register] = []
 
         stack_vars: list[MemVar] = []
@@ -96,7 +97,7 @@ class Arm64EmulationContext(EmulationContext):
         # NOTE: Order is important. RandMemVars depend on the corresponding args.
         # TODO: 1. I need help with understanding the note
         #       2. SSE equivalent in aarch64?
-        self._variables = gprs_arg + stack_vars + heap_vars
+        self._variables = all_gprs + all_fprs + gprs_arg + stack_vars + heap_vars
 
         if ret_ty[0] in ["i", "u"]:
             size = int(ret_ty[1:])
@@ -108,10 +109,16 @@ class Arm64EmulationContext(EmulationContext):
                 self._result_variables = [Register("x0", self)]
         elif ret_ty[0] == "f":
             size = int(ret_ty[1:])
-            if size <= 32:
+            if size == 8:
+                self._result_variables = [Register("b0", self)]
+            elif size == 16:
+                self._result_variables = [Register("h0", self)]
+            elif size == 32:
                 self._result_variables = [Register("s0", self)]
-            else:     
+            elif size == 64:
                 self._result_variables = [Register("d0", self)]
+            elif size == 128:
+                self._result_variables = [Register("q0", self)]
         elif ret_ty[0] == "p":
             self._result_variables = [
                 RandMemVar(Register("x0", self), int(ret_ty[1:]), self)
@@ -125,26 +132,26 @@ class Arm64EmulationContext(EmulationContext):
 
     def allowed_registers(self) -> list[str]:
         return [self._GPR_INT_32.join(self._GPR_INT_64)
-                                .join(self._GPR_FLOAT_8)
-                                .join(self._GPR_FLOAT_16)
-                                .join(self._GPR_FLOAT_32)
-                                .join(self._GPR_FLOAT_64)
-                                .join(self._GPR_FLOAT_128)]
+                                .join(self._FPR_8)
+                                .join(self._FPR_16)
+                                .join(self._FPR_32)
+                                .join(self._FPR_64)
+                                .join(self._FPR_128)]
 
     def register_size(self, name: str) -> int:
         if name in self._GPR_INT_32:
             return 4
         if name in self._GPR_INT_64:
             return 8
-        if name in self._GPR_FLOAT_8:
+        if name in self._FPR_8:
             return 1
-        if name in self._GPR_FLOAT_16:
+        if name in self._FPR_16:
             return 2
-        if name in self._GPR_FLOAT_32:
+        if name in self._FPR_32:
             return 4
-        if name in self._GPR_FLOAT_64:
+        if name in self._FPR_64:
             return 8
-        if name in self._GPR_FLOAT_128:
+        if name in self._FPR_128:
             return 16
         raise ValueError(f"Register size not known: {name}")
 

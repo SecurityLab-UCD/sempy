@@ -2,8 +2,8 @@
 
 int32_t main()
 {
-    float_t dividend = 1;
-    float_t divisor = 3;
+    int32_t dividend = 5;
+    int32_t divisor = 2;
     float_t res = func_1(dividend, divisor);
 
     printf("%f\n", res);
