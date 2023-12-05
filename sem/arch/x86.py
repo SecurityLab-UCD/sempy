@@ -44,14 +44,17 @@ class X86EmulationContext(EmulationContext):
     def __init__(self) -> None:
         super().__init__()
         self._mode = "64"
-        # 1 MB alignment required by UE/QEMU
         map_size = 0x1000000
         self._mmaps: dict[str, tuple[int, int, int]] = {
+            # NOTE: assume max program size = 1MB for now
+            "program": (
+                0x401000,
+                0x100000,
+                UC_PROT_READ | UC_PROT_EXEC,
+            ),
             "bootstrap": (map_size, map_size, UC_PROT_READ | UC_PROT_EXEC),
             "stack": (map_size * 2, map_size, UC_PROT_READ | UC_PROT_WRITE),
             "heap": (map_size * 3, map_size, UC_PROT_READ | UC_PROT_WRITE),
-            # NOTE: assume max program size = 1MB for now
-            "program": (map_size * 4, map_size, UC_PROT_READ | UC_PROT_EXEC),
         }
 
         stack_map = self._mmaps["stack"]
@@ -63,11 +66,13 @@ class X86EmulationContext(EmulationContext):
     def _make_stack_arg(self, size=None):
         # NOTE: push defaults to word size (x64 => 64 bits)
         if not size or size <= int(self._mode):
-            size_on_stack = int(self._mode)
+            size_on_stack = int(self._mode) // 8
         else:
             size_on_stack = size
         self._rsp -= size_on_stack
-        return MemVar(self._rsp, size, self, VarAttr.MEMORY | VarAttr.FUNCTION_ARG)
+        return MemVar(
+            self._rsp, size_on_stack, self, VarAttr.MEMORY | VarAttr.FUNCTION_ARG
+        )
 
     def set_fn(self, ret_ty: str, arg_tys: list[str]):
         # TODO: handle mode 32
@@ -205,6 +210,9 @@ class X86EmulationContext(EmulationContext):
 
         for base, size, perms in self._mmaps.values():
             emulator.mem_map(base, size, perms)
+
+        for offset, value in program.consts.items():
+            emulator.mem_write(offset, value)
 
         assert self._mmaps["program"][1] >= len(program.image)
         emulator.mem_write(self.program_base, program.image)

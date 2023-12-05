@@ -66,6 +66,7 @@ class Arm64EmulationContext(EmulationContext):
         for idx, arg in enumerate(arg_tys):
             ## TODO: what is "u"
             register = None
+            arg = arg.split(':')[0]
             if arg[0] not in ["i", "p", "u"]:
                 continue
             if idx < 8:
@@ -176,6 +177,9 @@ class Arm64EmulationContext(EmulationContext):
 
         for base, size, perms in self._mmaps.values():
             emulator.mem_map(base, size, perms)
+
+        for offset, value in program.consts.items():
+            emulator.mem_write(self.program_base + offset, value)
 
         assert self._mmaps["program"][1] >= len(program.image)
         emulator.mem_write(self.program_base, program.image)

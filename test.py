@@ -1,4 +1,4 @@
-from sem.testing import Experiment, MutateCSmithProvider
+from sem.fuzzing import Experiment, MutateCSmithProvider, get_sym_offset
 from unicorn import UC_SECOND_SCALE
 from sem.emulation import (
     DefaultRandomizer,
@@ -109,7 +109,7 @@ class TestProgramProvider(MutateCSmithProvider):
                                 "-o", test_elf_path])
 
             try:
-                fn_offset = self.get_fn_offset(test_elf_path, fn_name)
+                fn_offset = get_sym_offset(test_elf_path, fn_name)
             except:
                 shutil.rmtree(tmpdir)
                 raise
@@ -245,30 +245,29 @@ class TestImplementations(unittest.TestCase):
     def test_0(self):
         self.setup_emulations("./testcases/test_0", [2, 2, 3, 4])
 
-    # def test_pointer_args(self):
-    #     self.setup_emulations("./testcases/test_pointer_args", [2000000])
+    def test_pointer_args(self):
+        self.setup_emulations("./testcases/test_pointer_args", [2000000])
 
-    # def test_stack_args(self):
-    #     self.setup_emulations("./testcases/test_stack_args",
-    #                           [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    def test_stack_args(self):
+        self.setup_emulations("./testcases/test_stack_args",
+                              [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 
-    # def test_one_stack_arg_x86(self):
-    #     self.setup_emulations("./testcases/test_one_stack_arg_x86",
-    #                           [1, 2, 3, 4, 5, 6, 7])
+    def test_one_stack_arg_x86(self):
+        self.setup_emulations("./testcases/test_one_stack_arg_x86",
+                              [1, 2, 3, 4, 5, 6, 7])
 
-    # def test_rand_stack_args(self):
-    #     self.setup_emulations("./testcases/test_rand_stack_args",
-    #                           [
-    #                               24047144,
-    #                               43228604,
-    #                               -921521,
-    #                               827519,
-    #                               -524606,
-    #                               582689,
-    #                               199105,
-    #                               77008,
-    #                               -588857,
-    #                               -487722,])
+    def test_rand_stack_args(self):
+        self.setup_emulations("./testcases/test_rand_stack_args",
+                              [
+                                  1,
+                                  1,
+                                  -1,
+                                  1,
+                                  -1,
+                                  1,
+                                  1,
+                                  1,
+                                  -1,])
         
     #def test_floating_ret_val(self):
     #    self.setup_emulations(
