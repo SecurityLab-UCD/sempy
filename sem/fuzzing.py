@@ -349,7 +349,7 @@ class IRFuzzerProvider(ProgramProvider):
             )
             ir_ll_path = os.path.join(tmpdir, "out.ll")
             subprocess.run(["llvm-dis", ir_bc_path, "-o", ir_ll_path])
-            name, ret_ty, arg_tys = self.choose_ir_fn(experiment, ir_ll_path)
+            name, ret_ty, arg_tys = self._choose_ir_fn(experiment, ir_ll_path)
 
             programs: list[Program] = []
             for opt_level in experiment.opt_levels:
@@ -397,7 +397,7 @@ class IRFuzzerProvider(ProgramProvider):
             # TODO: llc: check if memcpy and other builtins are used
             return programs
 
-    def choose_ir_fn(
+    def _choose_ir_fn(
         self,
         experiment: Experiment,
         ir_ll_path: str,
@@ -418,7 +418,8 @@ class IRFuzzerProvider(ProgramProvider):
             fn_name = m.group("fn_name")
             ret_ty = self._parse_arg_tys(m.group("ret_ty"))[0]
             arg_list = m.group("arg_list")
-            if fn_name in ["memcpy", "memset"] or fn_name.startswith("safe_"):
+            # Choose CSmith generated function only
+            if not fn_name.startswith("func_"):
                 continue
             last_generated_fn = (fn_name, ret_ty, self._parse_arg_tys(arg_list))
             if experiment.randomizer.choice([True, False]):
@@ -427,7 +428,7 @@ class IRFuzzerProvider(ProgramProvider):
                 return last_generated_fn
         if not last_generated_fn:
             raise RuntimeError("No generated functions found")
-        # Settle for empty parameter list
+        # Settle for potentially empty parameter list
         return last_generated_fn
 
     def _parse_arg_tys(self, arg_list: str) -> list[str]:
@@ -498,129 +499,179 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         with contextlib.nullcontext(
             tempfile.mkdtemp(prefix=experiment.output_dir)
         ) as tmpdir:
-            # TODO: organize some of the steps into inherited functions to remove redundant code
-            # Generate source
             source_c_path = os.path.join(tmpdir, "out.c")
+            source_elf_0_path = os.path.join(tmpdir, "out.0.elf")
+            source_elf_3_path = os.path.join(tmpdir, "out.3.elf")
             source_bc_path = os.path.join(tmpdir, "out.bc")
             source_ll_path = os.path.join(tmpdir, "out.ll")
+
+            # Generate source
             self.gen_csmith_program(experiment, source_c_path)
+            self._clang(source_c_path, source_ll_path)
 
-            subprocess.run(
-                [
-                    "clang",
-                    "-S",
-                    "-emit-llvm",
-                    "-O0",
-                    "-Xclang",
-                    "-disable-O0-optnone",
-                    f"-I{self.CSMITH_RUNTIME}",
-                    "-nostdlib",
-                    "-ffreestanding",
-                    "-fno-builtin",
-                    source_c_path,
-                    "-o",
-                    source_ll_path,
-                ],
-                stderr=subprocess.DEVNULL,
-            )
+            # Compile unmutated .ll for reference
+            arch = experiment.context.arch
+            triple = f"{arch if arch != 'x86' else 'x86_64'}--"
+            self._compile_elf("0", triple, source_ll_path, source_elf_0_path)
+            self._compile_elf("3", triple, source_ll_path, source_elf_3_path)
+
+            # Mutate .ll
             subprocess.run(["llvm-as", source_ll_path])
+            self._mutate(source_bc_path, tmpdir, experiment)
 
-            irfuzzer_env = os.environ.copy()
-            irfuzzer_env["NUM_MUTATE"] = str(self.MUTATION_ITERS)
-            mutation = subprocess.run(
-                ["MutatorDriver", source_bc_path, str(experiment.randomizer.get())],
-                env=irfuzzer_env,
-                cwd=tmpdir,
-                stderr=subprocess.DEVNULL,
-            )
-            if mutation.returncode != 0:
-                rmdir(tmpdir)
-                raise RuntimeError(mutation.stderr)
-
-            subprocess.run(["llvm-dis", source_bc_path])
+            programs: list[Program] = []
             try:
-                fn_name, ret_ty, arg_tys = self.choose_ir_fn(experiment, source_ll_path)
+                subprocess.run(["llvm-dis", source_bc_path])
+                fn_info = self._choose_ir_fn(experiment, source_ll_path)
                 with open(os.path.join(tmpdir, "chosen_function.txt"), "w") as f:
-                    f.write(fn_name)
+                    f.write(fn_info[0])
+                programs.extend(
+                    [
+                        self._make_program(
+                            source_elf_0_path, "unmutated O0", fn_info, tmpdir, False
+                        ),
+                        self._make_program(
+                            source_elf_0_path, "unmutated O3", fn_info, tmpdir, False
+                        ),
+                    ]
+                )
             except:
                 rmdir(tmpdir)
                 raise
-            programs: list[Program] = []
 
+            # Compile .o with EMI global
             emi_ll_path = os.path.join(tmpdir, "emi_false.ll")
             emi_o_path = os.path.join(tmpdir, "emi_false.o")
             with open(emi_ll_path, "w") as f:
                 f.write("@emi_false = global i1 0")
-            arch = experiment.context.arch
-            llc_triple = f"-mtriple={arch if arch != 'x86' else 'x86_64'}--"
             subprocess.run(
-                ["llc", "-filetype=obj", llc_triple, emi_ll_path, f"-o", emi_o_path]
-            )
-            for opt_level in experiment.opt_levels:
-                # opt_ll_path = os.path.join(tmpdir, f"{opt_level}.ll")
-                # asm_path = os.path.join(tmpdir, f"{opt_level}.s")
-                o_path = os.path.join(tmpdir, f"{opt_level}.o")
-                elf_path = os.path.join(tmpdir, f"{opt_level}.elf")
-                image_path = os.path.join(tmpdir, f"{opt_level}.bin")
-
-                # NOTE: for now, don't test middle end
-                # TODO: add opt testing support as cmdline switch
-                # subprocess.run(
-                #     [
-                #         "opt",
-                #         "-S",
-                #         f"--passes=default<O{opt_level}>",
-                #         "--disable-simplify-libcalls",
-                #         source_bc_path,
-                #         "-o",
-                #         opt_ll_path,
-                #     ]
-                # )
-
-                llc_args = [
+                [
                     "llc",
                     "-filetype=obj",
-                    f"-O{opt_level}",
-                    "--disable-simplify-libcalls",
-                    llc_triple,
-                    source_bc_path,  # opt_ll_path,
-                    "-o",
-                    o_path,
+                    f"-mtriple={triple}",
+                    emi_ll_path,
+                    f"-o",
+                    emi_o_path,
                 ]
-                if arch == "x86":
-                    llc_args += ["-mattr=+sse,+sse2", "--x86-asm-syntax=intel"]
-                subprocess.run(llc_args, stderr=subprocess.DEVNULL)
-                subprocess.run(
-                    ["ld", emi_o_path, o_path, "-o", elf_path],
-                    stderr=subprocess.DEVNULL,
-                )
+            )
 
-                try:
-                    fn_offset = get_sym_offset(elf_path, fn_name)
-                    emi_false_offset = get_sym_offset(elf_path, "emi_false", False)
-                except:
-                    rmdir(tmpdir)
-                    raise
+            for opt_level in experiment.opt_levels:
+                elf_path = os.path.join(tmpdir, f"{opt_level}.elf")
 
-                subprocess.run(
-                    ["objcopy", "-O", "binary", "-j", ".text", elf_path, image_path]
+                self._compile_elf(
+                    opt_level, triple, source_bc_path, elf_path, [emi_o_path]
                 )
-
-                with open(image_path, "rb") as image_file:
-                    image = image_file.read()
-                programs.append(
-                    Program(
-                        f"O{opt_level}",
-                        image,
-                        ret_ty,
-                        arg_tys,
-                        fn_offset,
-                        tmpdir,
-                        {emi_false_offset: b"\x00"},
-                    )
+                program = self._make_program(
+                    elf_path,
+                    f"O{opt_level}",
+                    fn_info,
+                    tmpdir,
+                    True,
                 )
+                programs.append(program)
 
             return programs
+
+    def _clang(self, source: str, output: str):
+        clang_args = [
+            "clang",
+            "-O0",
+            f"-I{self.CSMITH_RUNTIME}",
+            "-nostdlib",
+            "-ffreestanding",
+            "-fno-builtin",
+            source,
+            "-o",
+            output,
+        ]
+
+        if ".ll" in output:
+            clang_args.extend(
+                [
+                    "-S",
+                    "-emit-llvm",
+                    "-Xclang",
+                    "-disable-O0-optnone",
+                ]
+            )
+
+        subprocess.run(
+            clang_args,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def _mutate(self, target_file: str, tmpdir: str, experiment: Experiment):
+        irfuzzer_env = os.environ.copy()
+        irfuzzer_env["NUM_MUTATE"] = str(self.MUTATION_ITERS)
+        mutation = subprocess.run(
+            ["MutatorDriver", target_file, str(experiment.randomizer.get())],
+            env=irfuzzer_env,
+            cwd=tmpdir,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        if mutation.returncode != 0:
+            rmdir(tmpdir)
+            raise RuntimeError(mutation.stderr)
+
+    def _compile_elf(
+        self,
+        opt_level: str,
+        triple: str,
+        source: str,
+        output: str,
+        link_with: list[str] = [],
+    ):
+        stderr = subprocess.STDOUT if is_debug else subprocess.DEVNULL
+
+        llc_args = [
+            "llc",
+            "-filetype=obj",
+            f"-O{opt_level}",
+            "--disable-simplify-libcalls",
+            f"-mtriple={triple}",
+            source,
+            "-o",
+            f"{source}.o",
+        ]
+        if "x86" in triple:
+            llc_args += ["-mattr=+sse,+sse2", "--x86-asm-syntax=intel"]
+        subprocess.run(llc_args, stderr=stderr, check=True)
+        subprocess.run(
+            ["ld", *link_with, f"{source}.o", "-o", output], stderr=stderr, check=True
+        )
+
+    def _make_program(
+        self,
+        elf_path: str,
+        name: str,
+        fn_info: tuple[str, str, list[str]],
+        dir: str,
+        has_emi: bool,
+    ):
+        fn_name, ret_ty, arg_tys = fn_info
+        try:
+            fn_offset = get_sym_offset(elf_path, fn_name)
+            if has_emi:
+                emi_false_offset = get_sym_offset(elf_path, "emi_false", False)
+        except:
+            rmdir(dir)
+            raise
+        image_path = f"{elf_path}.bin"
+        subprocess.run(["objcopy", "-O", "binary", "-j", ".text", elf_path, image_path])
+
+        with open(image_path, "rb") as image_file:
+            image = image_file.read()
+            consts = {emi_false_offset: b"\x00"} if has_emi else {}
+            return Program(
+                name,
+                image,
+                ret_ty,
+                arg_tys,
+                fn_offset,
+                dir,
+                consts,
+            )
 
     @property
     def name(self) -> str:
