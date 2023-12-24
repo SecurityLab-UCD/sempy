@@ -201,7 +201,7 @@ def main():
 
     for _ in range(args.experiments):
         process = multiprocessing.Process(target=fuzz, args=(args, rand.get()))
-        time.sleep(0.5)  # suppress pwnlib term init error
+        time.sleep(0.001)  # suppress pwnlib term init error
         processes.append(process)
         process.start()
 

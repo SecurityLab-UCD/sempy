@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import contextlib
+from glob import glob
 import logging
 import os
 import re
@@ -508,51 +509,49 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
             rmdir(tmpdir)
             raise
 
-    def _get(self, experiment: Experiment, tmpdir: str) -> list[Program]:
+    def _get(self, experiment: Experiment, cwd: str) -> list[Program]:
         """Get a list of programs (O*, O* unmutated)."""
 
-        source_c_path = os.path.join(tmpdir, "out.c")
-        source_elf_0_path = os.path.join(tmpdir, "out.0.elf")
-        source_elf_3_path = os.path.join(tmpdir, "out.3.elf")
-        source_bc_path = os.path.join(tmpdir, "out.bc")
-        source_ll_path = os.path.join(tmpdir, "out.ll")
+        csmith_c_path = os.path.join(cwd, "csmith.c")
+        csmith_ll_path = os.path.join(cwd, "csmith.ll")
+        csmith_elf_paths = []
+        irf_ll_path = os.path.join(cwd, "out.ll")
+        # NOTE: This has to be out.bc since that's also what IRFuzzer outputs into.
+        irf_bc_path = os.path.join(cwd, "out.bc")
 
-        # Generate source
-        self.gen_csmith_program(experiment, source_c_path)
-        self._clang(source_c_path, source_ll_path)
+        # Generate CSmith sources
+        self.gen_csmith_program(experiment, csmith_c_path)
+        self._clang(csmith_c_path, csmith_ll_path)
 
-        # Compile unmutated .ll for reference
+        # Compile unmutated .ll for reference, made into programs later
         arch = experiment.context.arch
         triple = f"{arch if arch != 'x86' else 'x86_64'}--"
-        self._compile_elf("0", triple, source_ll_path, source_elf_0_path)
-        self._compile_elf("3", triple, source_ll_path, source_elf_3_path)
+        for opt_level in experiment.opt_levels:
+            csmith_elf_path = os.path.join(cwd, f"csmith.{opt_level}.elf")
+            self._compile_elf(opt_level, triple, csmith_ll_path, csmith_elf_path)
+            csmith_elf_paths.append(csmith_elf_path)
 
         # Mutate .ll
-        subprocess.run(["llvm-as", source_ll_path], check=True)
-        self._mutate(source_bc_path, tmpdir, experiment)
+        subprocess.run(["llvm-as", csmith_ll_path, "-o", irf_bc_path], check=True)
+        self._mutate(irf_bc_path, cwd, experiment)
 
         programs: list[Program] = []
-        try:
-            subprocess.run(["llvm-dis", source_bc_path], check=True)
-            fn_info = self._choose_ir_fn(experiment, source_ll_path)
-            with open(os.path.join(tmpdir, "chosen_function.txt"), "w") as f:
-                f.write(fn_info[0])
-            programs.extend(
-                [
-                    self._make_program(
-                        source_elf_0_path, "unmutated O0", fn_info, tmpdir, False
-                    ),
-                    self._make_program(
-                        source_elf_0_path, "unmutated O3", fn_info, tmpdir, False
-                    ),
-                ]
+        # Disassemble to choose a function
+        subprocess.run(["llvm-dis", irf_bc_path, "-o", irf_ll_path], check=True)
+        fn_info = self._choose_ir_fn(experiment, irf_ll_path)
+        with open(os.path.join(cwd, "chosen_function.txt"), "w") as f:
+            f.write(fn_info[0])
+        # We have chosen a function now, make programs for unmutated version
+        for idx, opt_level in enumerate(experiment.opt_levels):
+            programs.append(
+                self._make_program(
+                    csmith_elf_paths[idx], f"O{opt_level}", fn_info, cwd, False
+                )
             )
-        except:
-            raise
 
         # Compile .o with EMI global
-        emi_ll_path = os.path.join(tmpdir, "emi_false.ll")
-        emi_o_path = os.path.join(tmpdir, "emi_false.o")
+        emi_ll_path = os.path.join(cwd, "emi_false.ll")
+        emi_o_path = os.path.join(cwd, "emi_false.o")
         with open(emi_ll_path, "w") as f:
             f.write("@emi_false = global i1 0")
         subprocess.run(
@@ -568,25 +567,36 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         )
 
         for opt_level in experiment.opt_levels:
-            elf_path = os.path.join(tmpdir, f"{opt_level}.elf")
+            elf_path = os.path.join(cwd, f"{opt_level}.elf")
 
-            self._compile_elf(opt_level, triple, source_bc_path, elf_path, [emi_o_path])
+            self._compile_elf(opt_level, triple, irf_bc_path, elf_path, [emi_o_path])
             program = self._make_program(
                 elf_path,
-                f"O{opt_level}",
+                f"O{opt_level}*",
                 fn_info,
-                tmpdir,
+                cwd,
                 True,
             )
             programs.append(program)
 
+        def rm_glob(pattern):
+            files = glob(os.path.join(cwd, pattern))
+            for file in files:
+                os.remove(file)
+
+        if not is_debug:
+            os.remove(emi_ll_path)
+            rm_glob("*.o")
+            rm_glob("*.elf")
+            rm_glob("*.bc")
+
         return programs
 
-    def _clang(self, source: str, output: str):
+    def _clang(self, source: str, output: str, opt_level: str = "0"):
         """Use clang to compile source into ELF or IR file."""
         clang_args = [
             "clang",
-            "-O0",
+            f"-O{opt_level}",  # don't test middle-end by default
             f"-I{self.CSMITH_RUNTIME}",
             "-nostdlib",
             "-ffreestanding",
