@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import contextlib
 from glob import glob
+import json
 import logging
 import os
 import re
@@ -160,6 +161,10 @@ class Experiment:
         diff = {}
         for var in vars:
             values = [var.get(emu) for emu in self._emulators]
+            if self.program_provider.name == "mutate-csmith":
+                if any(values[0] != value for value in values[1 : len(values) // 2]):
+                    # Ignore cases where CSmith produced the difference
+                    continue
             if all(values[0] == value for value in values[1:]):
                 continue
             diff[var] = values
@@ -520,40 +525,36 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
     def _get(self, experiment: Experiment, cwd: str) -> list[Program]:
         """Get a list of programs (O*, O* unmutated)."""
 
+        # Generate CSmith sources
         csmith_c_path = os.path.join(cwd, "csmith.c")
         csmith_ll_path = os.path.join(cwd, "csmith.ll")
-        csmith_elf_paths = []
-        irf_ll_path = os.path.join(cwd, "out.ll")
-        # NOTE: This has to be out.bc since that's also what IRFuzzer outputs into.
-        irf_bc_path = os.path.join(cwd, "out.bc")
-
-        # Generate CSmith sources
         self.gen_csmith_program(experiment, csmith_c_path)
         self._clang(csmith_c_path, csmith_ll_path)
 
-        # Compile unmutated .ll for reference, made into programs later
+        # Mutate .ll
+        # NOTE: This has to be out.bc since that's also what IRFuzzer outputs into.
+        irf_bc_path = os.path.join(cwd, "out.bc")
+        subprocess.run(["llvm-as", csmith_ll_path, "-o", irf_bc_path], check=True)
+        self._mutate(irf_bc_path, cwd, experiment)
+
+        # Disassemble to choose a function
+        irf_ll_path = os.path.join(cwd, "out.ll")
+        subprocess.run(["llvm-dis", irf_bc_path, "-o", irf_ll_path], check=True)
+
+        fn_info = self._choose_ir_fn(experiment, csmith_ll_path)
+        with open(os.path.join(cwd, "fn_info.json"), "w") as f:
+            f.write(json.dumps(fn_info))
+
+        # Make unmutated programs for comparison
+        programs: list[Program] = []
         arch = experiment.context.arch
         triple = f"{arch if arch != 'x86' else 'x86_64'}--"
         for opt_level in experiment.opt_levels:
             csmith_elf_path = os.path.join(cwd, f"csmith.{opt_level}.elf")
             self._compile_elf(opt_level, triple, csmith_ll_path, csmith_elf_path)
-            csmith_elf_paths.append(csmith_elf_path)
-
-        # Mutate .ll
-        subprocess.run(["llvm-as", csmith_ll_path, "-o", irf_bc_path], check=True)
-        self._mutate(irf_bc_path, cwd, experiment)
-
-        programs: list[Program] = []
-        # Disassemble to choose a function
-        subprocess.run(["llvm-dis", irf_bc_path, "-o", irf_ll_path], check=True)
-        fn_info = self._choose_ir_fn(experiment, irf_ll_path)
-        with open(os.path.join(cwd, "chosen_function.txt"), "w") as f:
-            f.write(fn_info[0])
-        # We have chosen a function now, make programs for unmutated version
-        for idx, opt_level in enumerate(experiment.opt_levels):
             programs.append(
                 self._make_program(
-                    csmith_elf_paths[idx], f"O{opt_level}", fn_info, cwd, False
+                    csmith_elf_path, f"O{opt_level}", fn_info, cwd, False
                 )
             )
 
@@ -578,14 +579,15 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
             elf_path = os.path.join(cwd, f"{opt_level}.elf")
 
             self._compile_elf(opt_level, triple, irf_bc_path, elf_path, [emi_o_path])
-            program = self._make_program(
-                elf_path,
-                f"O{opt_level}*",
-                fn_info,
-                cwd,
-                True,
+            programs.append(
+                self._make_program(
+                    elf_path,
+                    f"O{opt_level}*",
+                    fn_info,
+                    cwd,
+                    True,
+                )
             )
-            programs.append(program)
 
         def rm_glob(pattern):
             files = glob(os.path.join(cwd, pattern))
@@ -627,18 +629,17 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         subprocess.run(clang_args, stderr=subprocess.DEVNULL, check=True)
 
     def _mutate(self, target_file: str, tmpdir: str, experiment: Experiment):
-        """Mutate IRFuzzer"""
+        """Mutate bitcode file via IRFuzzer"""
+        assert target_file.endswith("out.bc")
         irfuzzer_env = os.environ.copy()
         irfuzzer_env["NUM_MUTATE"] = str(self.MUTATION_ITERS)
-        mutation = subprocess.run(
+        subprocess.run(
             ["MutatorDriver", target_file, str(experiment.randomizer.get())],
             env=irfuzzer_env,
             cwd=tmpdir,
             stderr=subprocess.DEVNULL,
             check=True,
         )
-        if mutation.returncode != 0:
-            raise RuntimeError(mutation.stderr.decode("utf-8"))
 
     def _compile_elf(
         self,
@@ -650,6 +651,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
     ):
         stderr = subprocess.STDOUT if is_debug else subprocess.DEVNULL
 
+        obj_file = f"{source}.{opt_level}.o"
         llc_args = [
             "llc",
             "-filetype=obj",
@@ -658,13 +660,15 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
             f"-mtriple={triple}",
             source,
             "-o",
-            f"{source}.o",
+            obj_file,
         ]
         if "x86" in triple:
             llc_args += ["-mattr=+sse,+sse2", "--x86-asm-syntax=intel"]
         subprocess.run(llc_args, stderr=stderr, check=True)
         subprocess.run(
-            ["ld", *link_with, f"{source}.o", "-o", output], stderr=stderr, check=True
+            ["ld", *link_with, obj_file, "-o", output, "--warn-once"],
+            stderr=subprocess.DEVNULL,
+            check=True,
         )
 
     def _make_program(
@@ -676,12 +680,9 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         has_emi: bool,
     ):
         fn_name, ret_ty, arg_tys = fn_info
-        try:
-            fn_offset = get_sym_offset(elf_path, fn_name)
-            if has_emi:
-                emi_false_offset = get_sym_offset(elf_path, "emi_false", False)
-        except:
-            raise
+        fn_offset = get_sym_offset(elf_path, fn_name)
+        if has_emi:
+            emi_false_offset = get_sym_offset(elf_path, "emi_false", False)
         image_path = f"{elf_path}.bin"
         subprocess.run(
             ["objcopy", "-O", "binary", "-j", ".text", elf_path, image_path], check=True
