@@ -82,7 +82,7 @@ def parse_args() -> Namespace:
         "--repro",
         type=int,
         default=None,
-        help="Reproduce a program seed (--program-seed REPRO --once --debug)",
+        help="Reproduce a program seed (--program-seed REPRO --once)",
     )
     parser.add_argument(
         "--program-seed",
@@ -134,7 +134,6 @@ def parse_args() -> Namespace:
             parser.error("Expected at least two optimization levels to compare")
         if args.repro is not None:
             args.program_seed = args.repro
-            args.debug = True
             args.once = True
     args.outdir = os.path.join(args.outdir, "")
 
