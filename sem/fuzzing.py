@@ -93,6 +93,8 @@ class Experiment:
             self._programs = self.program_provider.get(self)
         except Exception as e:
             log.error("Program generation exception", exc_info=True)
+            if is_debug:
+                print(e)
             return (RunStatus.RUN_GEN_EXC, program_seed)
 
         assert len(self._programs) >= 2
@@ -142,8 +144,10 @@ class Experiment:
             if len(self._diff):
                 data_dir = self._programs[0].data_dir
                 dest = os.path.join(data_dir.rsplit("/", 1)[0], str(program_seed))
-                rmdir(dest)
+                shutil.rmtree(dest, ignore_errors=True)
                 os.rename(data_dir, dest)
+                with open(os.path.join(dest, "diff.txt"), "w") as f:
+                    f.write(str(self.make_diff_table()))
                 return (RunStatus.RUN_DIFF, program_seed)
 
         rmdir(self._programs[0].data_dir)
@@ -163,7 +167,11 @@ class Experiment:
 
     def _dump_registers(self):
         vars = self.context.variables
-        table = {var: [var.get(emu) for emu in self._emulators] for var in vars}
+        table = {
+            var: [var.get(emu) for emu in self._emulators]
+            for var in vars
+            if "ymm" not in var.name
+        }
         print(self.make_diff_table(table))
 
     def make_diff_table(self, diff: dict[Variable, list[bytes]] = {}):

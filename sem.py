@@ -163,14 +163,14 @@ def fuzz(args: Namespace, seed: int):
     )
 
     for i in count(start=1):
-        status, program_seed = expr.run(args.program_seed)
+        status, _ = expr.run(args.program_seed)
         if not args.quiet:
             match status:
                 case RunStatus.RUN_DIFF:
-                    print("Difference found")
                     if args.debug:
-                        print(program_seed)
                         print(expr.make_diff_table())
+                    else:
+                        print("Difference found")
                 case RunStatus.RUN_OK:
                     print("No difference found")
                 case RunStatus.RUN_EMU_EXC:
