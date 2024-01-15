@@ -9,13 +9,16 @@ SEED=$1
 NUMERIC_RE='^[0-9]+$'
 if ! [[ $SEED =~ $NUMERIC_RE ]]; then
     echo "Please specify a valid program seed"
+    exit 1
 fi
 OUTPUT=$2
 if [[ -z $OUTPUT ]]; then
     echo "Please specify a valid output directory"
+    exit 1
 fi
 if [[ -z $FN_INFO ]]; then
     echo "Please specify chosen function information in \$FN_INFO"
+    exit 1
 fi
 
 # Prepare temp dir for sem.py output
