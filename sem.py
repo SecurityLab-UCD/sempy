@@ -92,6 +92,15 @@ def parse_args() -> Namespace:
     )
     parser.add_argument("--once", action="store_true", help="Emulate once and quit")
     parser.add_argument("-d", "--debug", action="store_true", help="Show debug output")
+    parser.add_argument(
+        "-k", "--keep-data", action="store_true", help="Keep uninteresting seed data"
+    )
+    parser.add_argument(
+        "-R",
+        "--dump-regs",
+        action="store_true",
+        help="Dump register values before and after emulation",
+    )
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
     # -p file only
     parser.add_argument(
@@ -160,6 +169,8 @@ def fuzz(args: Namespace, seed: int):
         DefaultRandomizer(),
         int(0.5 * UC_SECOND_SCALE),
         args.debug,
+        args.keep_data,
+        args.dump_regs,
     )
 
     for i in count(start=1):
@@ -181,6 +192,9 @@ def fuzz(args: Namespace, seed: int):
                     print("Emulation timeout reached")
         current_time = time.time()
         if args.once or i == args.max_programs:
+            if status == RunStatus.RUN_DIFF and args.debug:
+                # Add 10 to differentiate between generic runtime error and RunStatus
+                exit(10 + RunStatus.RUN_DIFF)
             break
         # No need for precise timeouts, since each expr.run() finishes within a second
         if args.timeout != 0 and current_time - start_time > args.timeout:
@@ -200,7 +214,7 @@ def main():
 
     for _ in range(args.experiments):
         process = multiprocessing.Process(target=fuzz, args=(args, rand.get()))
-        time.sleep(0.001)  # suppress pwnlib term init error
+        time.sleep(0.1)  # suppress pwnlib term init error
         processes.append(process)
         process.start()
 
