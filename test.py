@@ -77,7 +77,7 @@ class TestProgramProvider(MutateCSmithProvider):
             subprocess.run(["llvm-as", test_ll_path])
 
             try:
-                fn_name, ret_ty, arg_tys = self.choose_ir_fn(
+                fn_name, ret_ty, arg_tys = self._choose_ir_fn(
                     None, test_ll_path)
             except Exception as e:
                 shutil.rmtree(tmpdir)

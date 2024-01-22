@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import logging
+import struct
 from math import ceil, log2
 
 from pwn import asm
@@ -7,6 +8,7 @@ from unicorn import UC_HOOK_CODE, Uc
 from unicorn.unicorn_const import UC_PROT_EXEC, UC_PROT_READ, UC_PROT_WRITE
 from unicorn import *
 from unicorn.arm64_const import *
+from binascii import hexlify
 
 from ..emulation import (
     EmulationContext,
@@ -35,11 +37,14 @@ class Arm64EmulationContext(EmulationContext):
         # 1 MB alignment required by UE/QEMU
         map_size = 0x1000000
         self._mmaps: dict[str, tuple[int, int, int]] = {
+            "program": (
+                0x0,
+                map_size,
+                UC_PROT_READ | UC_PROT_EXEC,
+            ),
             "bootstrap": (map_size, map_size, UC_PROT_READ | UC_PROT_EXEC),
             "stack": (map_size * 2, map_size, UC_PROT_READ | UC_PROT_WRITE),
             "heap": (map_size * 3, map_size, UC_PROT_READ | UC_PROT_WRITE),
-            # NOTE: assume max program size = 1MB for now
-            "program": (map_size * 4, map_size, UC_PROT_READ | UC_PROT_EXEC),
         }
 
         stack_map = self._mmaps["stack"]
@@ -162,15 +167,21 @@ class Arm64EmulationContext(EmulationContext):
         #bootstrap_size = 0x100
         bootstrap_base = self._mmaps["bootstrap"][0]
 
-
         bootstrap: bytes = asm(
-            f"bl 0x{self.program_base - bootstrap_base + program.fn_start_offset:x}",
+            f"""
+            // Load the lower 21 bits of the address
+            mov x9, 0x{bootstrap_base:x}
+            ldr x10, =0x{bootstrap_base - self.program_base - program.fn_start_offset:x}
+            sub x9, x9, x10
+            blr x9
+                """,
             vma=bootstrap_base,
             arch="aarch64",
             os="linux",
         )
+        print(f'{program.name} function address: {(self.program_base + program.fn_start_offset)}')
         emu_start = bootstrap_base
-        emu_end = bootstrap_base + len(bootstrap)
+        emu_end = bootstrap_base + len(bootstrap)  - 8
 
         #assert len(bootstrap) < bootstrap_size
         #bootstrap = bootstrap.ljust(bootstrap_size, b"\x90")
@@ -179,10 +190,12 @@ class Arm64EmulationContext(EmulationContext):
             emulator.mem_map(base, size, perms)
 
         for offset, value in program.consts.items():
-            emulator.mem_write(self.program_base + offset, value)
+            print(f'offset: {self.program_base + offset}')
+            emulator.mem_write(offset, value)
 
         assert self._mmaps["program"][1] >= len(program.image)
         emulator.mem_write(self.program_base, program.image)
+        print(f'{program.name} program_base: {self.program_base}')
         emulator.mem_write(bootstrap_base, bootstrap)
 
         def stack_setup(emulator: Uc, address, size, user_data):
@@ -223,6 +236,10 @@ class Arm64EmulationContext(EmulationContext):
     @property
     def pc_const(self) -> int:
         return self.register_consts[self.pc]
+
+    @property
+    def sp_const(self) -> int:
+        return self.register_consts["sp"]
 
     @property
     def program_base(self) -> int:

@@ -82,7 +82,7 @@ def parse_args() -> Namespace:
         "--repro",
         type=int,
         default=None,
-        help="Reproduce a program seed (--program-seed REPRO --once --debug)",
+        help="Reproduce a program seed (--program-seed REPRO --once)",
     )
     parser.add_argument(
         "--program-seed",
@@ -201,7 +201,7 @@ def main():
 
     for _ in range(args.experiments):
         process = multiprocessing.Process(target=fuzz, args=(args, rand.get()))
-        time.sleep(0.5)  # suppress pwnlib term init error
+        time.sleep(0.1)  # suppress pwnlib term init error
         processes.append(process)
         process.start()
 
