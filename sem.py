@@ -92,6 +92,15 @@ def parse_args() -> Namespace:
     )
     parser.add_argument("--once", action="store_true", help="Emulate once and quit")
     parser.add_argument("-d", "--debug", action="store_true", help="Show debug output")
+    parser.add_argument(
+        "-k", "--keep-data", action="store_true", help="Keep uninteresting seed data"
+    )
+    parser.add_argument(
+        "-R",
+        "--dump-regs",
+        action="store_true",
+        help="Dump register values before and after emulation",
+    )
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
     # -p file only
     parser.add_argument(
@@ -134,7 +143,6 @@ def parse_args() -> Namespace:
             parser.error("Expected at least two optimization levels to compare")
         if args.repro is not None:
             args.program_seed = args.repro
-            args.debug = True
             args.once = True
     args.outdir = os.path.join(args.outdir, "")
 
@@ -161,17 +169,19 @@ def fuzz(args: Namespace, seed: int):
         DefaultRandomizer(),
         int(0.5 * UC_SECOND_SCALE),
         args.debug,
+        args.keep_data,
+        args.dump_regs,
     )
 
     for i in count(start=1):
-        status, program_seed = expr.run(args.program_seed)
+        status, _ = expr.run(args.program_seed)
         if not args.quiet:
             match status:
                 case RunStatus.RUN_DIFF:
-                    print("Difference found")
                     if args.debug:
-                        print(program_seed)
                         print(expr.make_diff_table())
+                    else:
+                        print("Difference found")
                 case RunStatus.RUN_OK:
                     print("No difference found")
                 case RunStatus.RUN_EMU_EXC:
@@ -182,6 +192,9 @@ def fuzz(args: Namespace, seed: int):
                     print("Emulation timeout reached")
         current_time = time.time()
         if args.once or i == args.max_programs:
+            if status == RunStatus.RUN_DIFF and args.debug:
+                # Add 10 to differentiate between generic runtime error and RunStatus
+                exit(10 + RunStatus.RUN_DIFF)
             break
         # No need for precise timeouts, since each expr.run() finishes within a second
         if args.timeout != 0 and current_time - start_time > args.timeout:

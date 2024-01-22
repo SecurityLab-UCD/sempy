@@ -198,6 +198,8 @@ class TestImplementations(unittest.TestCase):
                 context,
                 StubRandomizer(seed=0, preset_vals=presetVals),
                 int(0.5 * UC_SECOND_SCALE),
+                True,
+                False,
                 True
             )
             test_experiments.append(testExperiment)
