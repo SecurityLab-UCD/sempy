@@ -239,7 +239,12 @@ class TestImplementations(unittest.TestCase):
 
         test_results.append(output_lines)
 
-        self.assertTrue(self.are_all_elements_same(test_results))
+        self.assertTrue(self.are_all_elements_same(test_results), 
+                        f'''Executions produce different results: 
+                            {self.contexts[0].arch} emulation: {test_results[0]}
+                            {self.contexts[1].arch} emulation: {test_results[1]}
+                            gcc: {test_results[2]}'''
+        )
 
     def are_all_elements_same(self, input_list):
         return all(elem == input_list[0] for elem in input_list[1:])
@@ -262,14 +267,14 @@ class TestImplementations(unittest.TestCase):
         self.setup_emulations("./testcases/test_rand_stack_args",
                               [
                                   1,
-                                  1,
-                                  -1,
-                                  1,
-                                  -1,
-                                  1,
-                                  1,
-                                  1,
-                                  -1,])
+                                  2,
+                                  3,
+                                  4,
+                                  5,
+                                  6,
+                                  7,
+                                  8,
+                                  9,])
         
     #def test_floating_ret_val(self):
     #    self.setup_emulations(
