@@ -2,15 +2,28 @@
 import logging
 import importlib
 import pkgutil
-from enum import Flag, auto
-from typing import Union
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import Flag, auto
 from random import Random
+from struct import pack
+from typing import Union, Iterable
 
 import sem.arch
 from unicorn import Uc, UcError, unicorn_const
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class Program:
+    name: str  # name of program (e.g. optimization level)
+    image: bytes  # program image (.text section only)
+    fn_ret_type: str  # function return type
+    fn_arg_types: list[str]  # function argument types
+    fn_start_offset: int  # address offset of the target function
+    data_dir: str  # directory where generated files are stored, delete if no difference found
+    consts: dict[int, bytes] = field(default_factory=lambda: {})
 
 
 class EmulationContext(ABC):
@@ -22,8 +35,8 @@ class EmulationContext(ABC):
         self.__register_consts = None
 
     @abstractmethod
-    def set_arg_types(self, args: list[str]) -> None:
-        """Set function argument types."""
+    def set_fn(self, ret_ty: str, arg_tys: list[str]) -> None:
+        """Set function argument types. Calls to this function must be repeatable."""
         pass
 
     @property
@@ -50,7 +63,7 @@ class EmulationContext(ABC):
         pass
 
     @abstractmethod
-    def make_emulator(self, sample: bytes) -> tuple[Uc, int, int]:
+    def make_emulator(self, program: Program) -> tuple[Uc, int, int]:
         """Return a reusable emulator object and the start & end address for
         emulation."""
         pass
@@ -168,10 +181,14 @@ class Randomizer(ABC):
         This method also updates last_seed."""
         pass
 
-    @property
     @abstractmethod
     def get(self) -> int:
         """Return a random int"""
+        pass
+
+    @abstractmethod
+    def choice(self, obj: Iterable) -> any:
+        """Choose an element from an iterable"""
         pass
 
     @property
@@ -193,9 +210,10 @@ class Randomizer(ABC):
         pass
 
     @abstractmethod
-    def next_round(self):
-        """Set the next random number as the new seed. Use when done with a
-        single round of emulation (i.e. emulated every sample once)."""
+    def next_round(self) -> int:
+        """Set the next random number as the new seed and return it.
+        Use when done with a single round of emulation (i.e. emulated every sample once).
+        """
         pass
 
 
@@ -258,8 +276,9 @@ class Register(Variable):
             return False
 
     def get(self, emulator: Uc):
+        true_size = self._context.register_size(self._reg)
         return emulator.reg_read(self._context.register_consts[self._reg]).to_bytes(
-            self.size, "big"
+            true_size, "big"
         )
 
     @property
@@ -322,6 +341,10 @@ class RandMemVar(Variable):
             return False
 
     def get(self, emulator: Uc):
+        if not self._addr:
+            self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
+        if self._addr == 0:
+            return None
         return emulator.mem_read(self._addr, self._size)
 
     @property
@@ -331,6 +354,62 @@ class RandMemVar(Variable):
     @property
     def size(self):
         return self._size
+
+
+class ZExtRegister(Register):
+    def __init__(
+        self,
+        name: str,
+        new_size: int,
+        context: EmulationContext,
+        attr: VarAttr = VarAttr.REGISTER,
+    ) -> None:
+        super().__init__(name, context, attr)
+        self._new_size = new_size
+
+    def set(self, data: bytes, emulator: Uc) -> bool:
+        if len(data) != self.size:
+            return False
+        data = int.from_bytes(data, "big")
+        try:
+            emulator.reg_write(self._context.register_consts[self._reg], data)
+            return True
+        except UcError:
+            return False
+
+    @Register.size.getter
+    def size(self):
+        return self._new_size
+
+
+class SExtRegister(Register):
+    def __init__(
+        self,
+        name: str,
+        new_size: int,
+        context: EmulationContext,
+        attr: VarAttr = VarAttr.REGISTER,
+    ) -> None:
+        super().__init__(name, context, attr)
+        self._new_size = new_size
+
+    def _sext(self, value):
+        sign_bit = 1 << (super().size * 8 - 1)
+        return (value & (sign_bit - 1)) - (value & sign_bit)
+
+    def set(self, data: bytes, emulator: Uc) -> bool:
+        if len(data) != self.size:
+            return False
+        data = self._sext(int.from_bytes(data, "big", signed=True))
+        try:
+            emulator.reg_write(self._context.register_consts[self._reg], data)
+            return True
+        except UcError:
+            return False
+
+    @Register.size.getter
+    def size(self):
+        return self._new_size
 
 
 class DefaultRandomizer(Randomizer):
@@ -355,9 +434,11 @@ class DefaultRandomizer(Randomizer):
             variable.set(data, emulator)
         self.seed = self._last_seed
 
-    @property
     def get(self) -> int:
         return self._random.randint(0, 2**64 - 1)
+
+    def choice(self, obj: Iterable) -> any:
+        return self._random.choice(obj)
 
     @property
     def last_seed(self) -> Union[int, None]:
@@ -373,5 +454,6 @@ class DefaultRandomizer(Randomizer):
         self._random.seed(self._seed)
         pass
 
-    def next_round(self):
+    def next_round(self) -> int:
         self.seed = self.get()
+        return self.seed
