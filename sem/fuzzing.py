@@ -131,6 +131,11 @@ class Experiment:
                 emulator, emu_begin, emu_end = emu_info
                 try:
                     self.randomizer.update(emulator, self.context)
+                    
+                    #def hook_code(mu, address, size, user_data):  
+                    #    print('>>> Tracing instruction at 0x%x, instruction size = 0x%x' %(address, size)) 
+#
+                    #emulator.hook_add(UC_HOOK_CODE, hook_code)
                     emulator.emu_start(emu_begin, emu_end, self.timeout)
                     if emulator.reg_read(self.context.pc_const) != emu_end:
                         rmdir(self._programs[0].data_dir)

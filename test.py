@@ -139,10 +139,18 @@ class StubRandomizer(DefaultRandomizer):
         vals = self._preset_vals[:]
         index = 0
         for variable in context.variables:
-            if variable.attr & VarAttr.PTR:
+            if variable.attr & VarAttr.PTR and \
+                    not isinstance(variable, MemVar):
                 # TODO: try to prevent overlapping
                 data = self._random.randrange(*context.ptr_range, 0x10)
                 data = data.to_bytes(variable.size, "big", signed=True)
+                index += 1
+
+            elif variable.attr & VarAttr.PTR and \
+                    isinstance(variable, MemVar):
+                # TODO: try to prevent overlapping
+                data = self._random.randrange(*context.ptr_range, 0x10)
+                data = data.to_bytes(variable.size, "little", signed=True)
                 index += 1
 
             elif variable.attr & VarAttr.FUNCTION_ARG and \
@@ -174,12 +182,12 @@ class TestImplementations(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:
         super().__init__(methodName)
 
+    def setup_emulations(self, testdir, presetVals, isReturnTypeInt = True):
         self.contexts = [
             EmulationContext.get("arm64", "arm"),
             EmulationContext.get("x86", "64"),
         ]
 
-    def setup_emulations(self, testdir, presetVals, isReturnTypeInt = True):
         test_experiments = []
         test_results = []
         program_seed = 10
@@ -262,7 +270,7 @@ class TestImplementations(unittest.TestCase):
     def test_one_stack_arg_x86(self):
         self.setup_emulations("./testcases/test_one_stack_arg_x86",
                               [1, 2, 3, 4, 5, 6, 7])
-
+        
     def test_rand_stack_args(self):
         self.setup_emulations("./testcases/test_rand_stack_args",
                               [

@@ -341,14 +341,22 @@ class RandMemVar(Variable):
         if len(data) != self.size:
             return False
         try:
-            self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
+            if isinstance(self._addr_src, MemVar) or \
+                isinstance(self.addr_src, RandMemVar):
+                self._addr = int.from_bytes(self._addr_src.get(emulator), "little")
+            else:
+                self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
             emulator.mem_write(self._addr, data)
         except UcError:
             return False
 
     def get(self, emulator: Uc):
         if not self._addr:
-            self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
+            if isinstance(self._addr_src, MemVar) or \
+                isinstance(self.addr_src, RandMemVar):
+                self._addr = int.from_bytes(self._addr_src.get(emulator), "little")
+            else:
+                self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
         if self._addr == 0:
             return None
         return emulator.mem_read(self._addr, self._size)
