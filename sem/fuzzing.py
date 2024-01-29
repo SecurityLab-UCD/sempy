@@ -458,7 +458,7 @@ class IRFuzzerProvider(ProgramProvider):
             if not fn_name.startswith("func_"):
                 continue
             last_generated_fn = (fn_name, ret_ty, self._parse_arg_tys(arg_list))
-            if experiment.randomizer.choice([True, False]):
+            if experiment and experiment.randomizer.choice([True, False]):
                 continue
             if arg_list:
                 return last_generated_fn
