@@ -373,7 +373,6 @@ class RandMemVar(Variable):
     def addr_src(self):
         return self._addr_src
 
-
 class ZExtRegister(Register):
     def __init__(
         self,
