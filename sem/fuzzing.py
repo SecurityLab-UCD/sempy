@@ -110,7 +110,7 @@ class Experiment:
                 print(e)
             return (RunStatus.RUN_GEN_EXC, program_seed)
 
-        assert len(self._programs) >= 2
+        #assert len(self._programs) >= 2
         self.context.set_fn(
             self._programs[0].fn_ret_type, self._programs[0].fn_arg_types
         )
@@ -304,8 +304,12 @@ class CSmithProvider(ProgramProvider):
                 subprocess.run(
                     ["clang", f"-O{opt_level}", "-c", ll_path, "-o", elf_path]
                 )
+
+                objcopy = "objcopy"
+                if experiment.context.arch == 'arm64':
+                    objcopy = "aarch64-linux-gnu-objcopy" 
                 subprocess.run(
-                    ["objcopy", "-O", "binary", "-j", ".text", elf_path, bin_path]
+                    [objcopy, "-O", "binary", "-j", ".text", elf_path, bin_path]
                 )
             ll_path = os.path.join(tmpdir, f"{experiment.opt_levels[0]}.ll")
 
@@ -404,14 +408,19 @@ class IRFuzzerProvider(ProgramProvider):
                 ]
                 if arch == "x86":
                     llc_args.append("-mattr=+sse,+sse2")
+                if arch == "arm64":
+                    llc_args += ["-mattr=fp-armv8"]
                 subprocess.run(llc_args)
 
                 elf_path = os.path.join(tmpdir, f"{opt_level}_out.elf")
                 subprocess.run(["as", asm_path, "-o", elf_path])
 
                 image_path = os.path.join(tmpdir, f"{opt_level}_out.bin")
+                objcopy = "objcopy"
+                if experiment.context.arch == 'arm64':
+                    objcopy = "aarch64-linux-gnu-objcopy"
                 subprocess.run(
-                    ["objcopy", "-O", "binary", "-j", ".text", elf_path, image_path]
+                    [objcopy, "-O", "binary", "-j", ".text", elf_path, image_path]
                 )
 
                 with open(image_path, "rb") as image_file:
@@ -449,7 +458,7 @@ class IRFuzzerProvider(ProgramProvider):
             if not fn_name.startswith("func_"):
                 continue
             last_generated_fn = (fn_name, ret_ty, self._parse_arg_tys(arg_list))
-            if experiment.randomizer.choice([True, False]):
+            if experiment and experiment.randomizer.choice([True, False]):
                 continue
             if arg_list:
                 return last_generated_fn
@@ -579,7 +588,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
             self._compile_elf(opt_level, triple, csmith_ll_path, csmith_elf_path)
             programs.append(
                 self._make_program(
-                    csmith_elf_path, f"O{opt_level}", fn_info, cwd, False
+                    csmith_elf_path, f"O{opt_level}", fn_info, cwd, False, arch
                 )
             )
 
@@ -611,6 +620,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                     fn_info,
                     cwd,
                     True,
+                    arch
                 )
             )
 
@@ -692,9 +702,15 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         ]
         if "x86" in triple:
             llc_args += ["-mattr=+sse,+sse2", "--x86-asm-syntax=intel"]
+        if "arm64" in triple:
+            llc_args += ["-mattr=fp-armv8"]
         subprocess.run(llc_args, stderr=stderr, check=True)
+
+        ld = "ld"
+        if "arm64" in triple:
+            ld = "aarch64-linux-gnu-ld"
         subprocess.run(
-            ["ld", *link_with, obj_file, "-o", output, "--warn-once"],
+            [ld, *link_with, obj_file, "-o", output, "--warn-once"],
             stderr=subprocess.DEVNULL,
             check=True,
         )
@@ -709,21 +725,25 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         fn_info: tuple[str, str, list[str]],
         dir: str,
         has_emi: bool,
+        arch: str = "x86"
     ):
         fn_name, ret_ty, arg_tys = fn_info
         fn_offset = get_sym_offset(elf_path, fn_name)
         if has_emi:
             emi_false_offset = get_sym_offset(elf_path, "emi_false", False)
         image_path = f"{elf_path}.bin"
+        objcopy = "objcopy"
+        if arch == 'arm64':
+            objcopy = "aarch64-linux-gnu-objcopy"
         subprocess.run(
-            ["objcopy", "-O", "binary", "-j", ".text", elf_path, image_path], check=True
+            [objcopy, "-O", "binary", "-j", ".text", elf_path, image_path], check=True
         )
 
         with open(image_path, "rb") as image_file:
             image = image_file.read()
             consts = {emi_false_offset: b"\x00"} if has_emi else {}
             return Program(
-                name,
+                f"{name}_{arch}",
                 image,
                 ret_ty,
                 arg_tys,

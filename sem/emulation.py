@@ -76,6 +76,12 @@ class EmulationContext(ABC):
 
     @property
     @abstractmethod
+    def mtriple(self) -> str:
+        """Return the llc mtriple option of the context (immutable)."""
+        pass
+
+    @property
+    @abstractmethod
     def mode(self) -> str:
         """Return the emulation mode of the context (e.g. 64)."""
         pass
@@ -154,8 +160,8 @@ class EmulationContext(ABC):
         """Get first-available context for given arch and mode."""
         # Run the subclass definitions
         archs = [name for _, name, _ in pkgutil.iter_modules(sem.arch.__path__)]
-        for arch in archs:
-            importlib.import_module(f"sem.arch.{arch}")
+        for ar in archs:
+            importlib.import_module(f"sem.arch.{ar}")
         # Find matching subclass
         for Context in EmulationContext.__subclasses__():
             try:
@@ -335,14 +341,22 @@ class RandMemVar(Variable):
         if len(data) != self.size:
             return False
         try:
-            self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
+            if isinstance(self._addr_src, MemVar) or \
+                isinstance(self.addr_src, RandMemVar):
+                self._addr = int.from_bytes(self._addr_src.get(emulator), "little")
+            else:
+                self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
             emulator.mem_write(self._addr, data)
         except UcError:
             return False
 
     def get(self, emulator: Uc):
         if not self._addr:
-            self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
+            if isinstance(self._addr_src, MemVar) or \
+                isinstance(self.addr_src, RandMemVar):
+                self._addr = int.from_bytes(self._addr_src.get(emulator), "little")
+            else:
+                self._addr = int.from_bytes(self._addr_src.get(emulator), "big")
         if self._addr == 0:
             return None
         return emulator.mem_read(self._addr, self._size)
@@ -354,7 +368,10 @@ class RandMemVar(Variable):
     @property
     def size(self):
         return self._size
-
+    
+    @property
+    def addr_src(self):
+        return self._addr_src
 
 class ZExtRegister(Register):
     def __init__(

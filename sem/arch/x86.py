@@ -97,7 +97,7 @@ class X86EmulationContext(EmulationContext):
         def size_of(arg_type: str):
             return (int(arg_type[1:]) + 7) // 8
 
-        for arg_type in arg_tys:
+        for arg_type in arg_tys[:len(arg_gprs)]:
             arg_attr = arg_type.split(":")[1] if ":" in arg_type else ""
             arg_type = arg_type.split(":")[0]
 
@@ -106,30 +106,40 @@ class X86EmulationContext(EmulationContext):
             # arguments to fill all SSE registers.
             if arg_type[0] not in ["i", "p", "u"]:
                 continue
-            if unused_gpr < len(arg_gprs):
-                # NOTE: Also assuming that i<size> is within word size
-                arg_gprs[unused_gpr].attr |= VarAttr.FUNCTION_ARG
-                if arg_type[0] == "p":
-                    arg_gprs[unused_gpr].attr |= VarAttr.PTR
-                    # ceil arg_type bit size to byte size
-                    heap_vars.append(
-                        RandMemVar(arg_gprs[unused_gpr], size_of(arg_type), self)
-                    )
-                elif arg_attr == "s":
-                    arg_gprs[unused_gpr] = SExtRegister(
-                        arg_gprs[unused_gpr]._reg, size_of(arg_type), self
-                    )
-                elif arg_attr == "z":
-                    arg_gprs[unused_gpr] = ZExtRegister(
-                        arg_gprs[unused_gpr]._reg, size_of(arg_type), self
-                    )
-                unused_gpr += 1
-            else:
-                stack_var = self._make_stack_arg(int(self._mode))
-                stack_vars.append(stack_var)
-                if arg_type[0] == "p":
-                    stack_var.attr |= VarAttr.PTR
-                    heap_vars.append(RandMemVar(stack_var, size_of(arg_type), self))
+            # NOTE: Also assuming that i<size> is within word size
+            arg_gprs[unused_gpr].attr |= VarAttr.FUNCTION_ARG
+            if arg_type[0] == "p":
+                arg_gprs[unused_gpr].attr |= VarAttr.PTR
+                # ceil arg_type bit size to byte size
+                heap_vars.append(
+                    RandMemVar(arg_gprs[unused_gpr], size_of(arg_type), self)
+                )
+            elif arg_attr == "s":
+                arg_gprs[unused_gpr] = SExtRegister(
+                    arg_gprs[unused_gpr]._reg, size_of(arg_type), self
+                )
+            elif arg_attr == "z":
+                arg_gprs[unused_gpr] = ZExtRegister(
+                    arg_gprs[unused_gpr]._reg, size_of(arg_type), self
+                )
+            unused_gpr += 1
+        
+        for arg_index in range(len(arg_tys) - 1, len(arg_gprs) - 1, -1):
+            arg_type = arg_tys[arg_index]
+            arg_attr = arg_type.split(":")[1] if ":" in arg_type else ""
+            arg_type = arg_type.split(":")[0]
+
+            # NOTE: Refer to https://www.uclibc.org/docs/psABI-x86_64.pdf for ABI
+            # HACK: For now, assume that there won't be enough floating pointer & vector
+            # arguments to fill all SSE registers.
+            if arg_type[0] not in ["i", "p", "u"]:
+                continue  
+            stack_var = self._make_stack_arg(int(self._mode))
+            stack_vars.append(stack_var)
+            if arg_type[0] == "p":
+                stack_var.attr |= VarAttr.PTR
+                heap_vars.append(RandMemVar(stack_var, size_of(arg_type), self))
+        stack_vars = stack_vars[::-1]
 
         # NOTE: Order is important. RandMemVars depend on pointer values of arg_gprs.
         # FIXME: add stack randomization to emulate undef behavior
@@ -236,6 +246,10 @@ class X86EmulationContext(EmulationContext):
     @property
     def arch(self) -> str:
         return "x86"
+    
+    @property
+    def mtriple(self) -> str:
+        return "x86_64"
 
     @property
     def mode(self) -> str:
