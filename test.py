@@ -120,7 +120,7 @@ class TestProgramProvider(MutateCSmithProvider):
             with open(image_path, "rb") as image_file:
                 image = image_file.read()
             return Program(f"test_{context.arch}_{context.mode}", 
-                           image, ret_ty, arg_tys, fn_offset, tmpdir)
+                           image, ret_ty, arg_tys, fn_offset, fn_name, tmpdir)
 
 
 class StubRandomizer(DefaultRandomizer):

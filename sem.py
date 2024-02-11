@@ -15,6 +15,7 @@ from sem.emulation import (
     EmulationContext,
 )
 from sem.fuzzing import Experiment, ProgramProvider, RunStatus
+from sem.native import NativeContext
 
 logging.root.setLevel(logging.INFO)
 log = logging.Logger(__name__, logging.INFO)
@@ -152,6 +153,7 @@ def parse_args() -> Namespace:
 def fuzz(args: Namespace, seed: int):
     start_time = time.time()
     context = EmulationContext.get(args.arch, args.mode)
+    nativeContext = NativeContext.get()
     provider = next(
         Sub() for Sub in all_subclasses(ProgramProvider) if Sub().name == args.provider
     )
@@ -166,6 +168,7 @@ def fuzz(args: Namespace, seed: int):
         [*args.opt_levels],
         args.count,
         context,
+        nativeContext,
         DefaultRandomizer(),
         int(0.5 * UC_SECOND_SCALE),
         args.debug,

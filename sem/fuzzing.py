@@ -20,6 +20,8 @@ from unicorn import Uc, UcError
 from unicorn.unicorn_const import *
 from elftools.elf.elffile import ELFFile
 
+from sem.native import NativeContext
+
 from .emulation import EmulationContext, Randomizer, VarAttr, Variable, Program
 
 log = logging.Logger(__name__, logging.INFO)
@@ -76,6 +78,7 @@ class Experiment:
     opt_levels: set[str]
     repeat_count: int
     context: EmulationContext
+    nativeContext: NativeContext
     randomizer: Randomizer
     timeout: int
     debug: bool
@@ -114,7 +117,9 @@ class Experiment:
         self.context.set_fn(
             self._programs[0].fn_ret_type, self._programs[0].fn_arg_types
         )
+        self.nativeContext.set_fn(self._programs[0])
         emu_infos = [self.context.make_emulator(program) for program in self._programs]
+        #native_infos = 
         self._emulators = [info[0] for info in emu_infos]
 
         for _ in range(self.repeat_count):
@@ -317,8 +322,9 @@ class CSmithProvider(ProgramProvider):
                 bin_path = os.path.join(tmpdir, f"{opt_level}.bin")
                 with open(bin_path, "rb") as program:
                     # FIXME: find start address of target function
+                    # FIXME: find target function name
                     programs.append(
-                        Program(f"O{opt_level}", program.read(), None, [], None, tmpdir)
+                        Program(f"O{opt_level}", program.read(), None, [], None, None, tmpdir)
                     )
             return programs
 
@@ -426,7 +432,7 @@ class IRFuzzerProvider(ProgramProvider):
                 with open(image_path, "rb") as image_file:
                     image = image_file.read()
                 programs.append(
-                    Program(f"O{opt_level}", image, ret_ty, arg_tys, 0, tmpdir)
+                    Program(f"O{opt_level}", image, ret_ty, arg_tys, 0, name, tmpdir)
                 )
             # TODO: make sure that addressspace is specified, so that alloca still allocates on *stack*
             #       alloca ref: https://llvm.org/docs/LangRef.html#alloca-instruction
@@ -748,6 +754,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 ret_ty,
                 arg_tys,
                 fn_offset,
+                fn_name,
                 dir,
                 consts,
             )
@@ -783,6 +790,7 @@ class FileProvider(ProgramProvider):
                 self._ret_ty,
                 self._arg_tys,
                 get_sym_offset(filename.replace(".bin", ".elf"), self._fn_name),
+                self._fn_name,
                 None,
             )
             for filename, image in zip(self._filenames, self._images)

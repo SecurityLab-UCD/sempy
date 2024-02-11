@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import Flag, auto
 from random import Random
 from struct import pack
-from typing import Union, Iterable
+from typing import Union, Iterable, overload
 
 import sem.arch
 from unicorn import Uc, UcError, unicorn_const
@@ -22,6 +22,7 @@ class Program:
     fn_ret_type: str  # function return type
     fn_arg_types: list[str]  # function argument types
     fn_start_offset: int  # address offset of the target function
+    fn_name: str # funciton name
     data_dir: str  # directory where generated files are stored, delete if no difference found
     consts: dict[int, bytes] = field(default_factory=lambda: {})
 
@@ -439,6 +440,7 @@ class DefaultRandomizer(Randomizer):
         self.seed = seed
         self._last_seed = None
 
+    @overload
     def update(self, emulator: Uc, context: EmulationContext):
         self._last_seed = self.seed
         for variable in context.variables:
@@ -450,6 +452,10 @@ class DefaultRandomizer(Randomizer):
                 data = self._random.randbytes(variable.size)
             variable.set(data, emulator)
         self.seed = self._last_seed
+
+    @overload
+    def update(self, program: Program, context: EmulationContext):
+        raise NotImplementedError()
 
     def get(self) -> int:
         return self._random.randint(0, 2**64 - 1)
