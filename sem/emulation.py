@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 import logging
 import importlib
+import os
 import pkgutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Flag, auto
 from random import Random
+import re
 from struct import pack
+import subprocess
 from typing import Union, Iterable, overload
 
 import sem.arch
@@ -25,7 +28,17 @@ class Program:
     fn_name: str # funciton name
     data_dir: str  # directory where generated files are stored, delete if no difference found
     consts: dict[int, bytes] = field(default_factory=lambda: {})
+    obj_name: str = None # object file name
+    fn_signature: str = None # function signature
+    opt_level: int = None # optimization level
+    emi: bool = False # 
 
+class ProgramContext(ABC):
+    @property
+    @abstractmethod
+    def variables(self) -> list["Variable"]:
+        """Variables that can be randomized before program execution."""
+        pass
 
 class EmulationContext(ABC):
     """An EmulationContext specifies how a sample is emulated and compared
@@ -38,12 +51,6 @@ class EmulationContext(ABC):
     @abstractmethod
     def set_fn(self, ret_ty: str, arg_tys: list[str]) -> None:
         """Set function argument types. Calls to this function must be repeatable."""
-        pass
-
-    @property
-    @abstractmethod
-    def variables(self) -> list["Variable"]:
-        """Variables that can be randomized before program execution."""
         pass
 
     @property
@@ -224,21 +231,229 @@ class Randomizer(ABC):
         pass
 
 
+class NativeContext(ProgramContext):
+    def __init__(self) -> None:
+        super().__init__()
+        self._variables: list[NativeVariable] = []
+        self._result_variables: list[NativeVariable] = []
+
+    def run_program(self, program: Program, repeat: int, timeout: int) -> str:
+        driver_file_name = f"{program.data_dir}/driver_{repeat}.c"
+        if not os.path.exists(driver_file_name):
+            self._create_driver(program, repeat)
+
+        clang_args = [
+            "clang",
+            f"{program.data_dir}/driver_{repeat}.o",
+            program.obj_name,
+        ]
+        if program.emi:
+            clang_args.append(f"{program.data_dir}/emi_false.o")
+        
+        executable = f"{program.data_dir}/{program.emi}_{program.opt_level}"
+        clang_args.extend([            
+            "-o",
+            executable,
+            "-no-pie"])
+        subprocess.run(clang_args, stderr=subprocess.DEVNULL, check=True)  
+
+
+        result = subprocess.run(f'{executable}', 
+                                stdout=subprocess.PIPE, 
+                                stderr=subprocess.PIPE, 
+                                text=True, 
+                                check=True,
+                                timeout=timeout)
+
+        
+
+        return result.stdout
+
+    def _create_driver(self, program: Program, repeat: int) -> None:
+        stmts = ""
+        for index, var in enumerate(self._variables):
+            if var.attr & VarAttr.UNSIGNED:
+                stmt = f"uint{var.size * 8}_t v{index} = {var.val};\n"
+            else:
+                stmt = f"int{var.size * 8}_t v{index} = {var.val};\n"
+            if var.attr & VarAttr.PTR:
+                if var.attr & VarAttr.UNSIGNED:
+                    stmt += f"uint{var.size * 8}_t* p{index} = &v{index};\n"
+                else:
+                    stmt += f"int{var.size * 8}_t* p{index} = &v{index};\n"
+            stmts += stmt
+
+        args = ""
+        for index, var in enumerate(self._variables):
+            if var.attr & VarAttr.PTR:
+                args += f"p{index}, "
+            else:
+                args += f"v{index}, "
+        if len(args) > 0:
+            args = args[:-2]
+
+        if len(self._result_variables) > 0:
+            stmts += f"{self._parse_c_ty(self._result_variables[0])} res = {program.fn_name}({args});\n"
+        else:
+            stmts += f"{program.fn_name}({args});\n"
+
+        # if not void type
+        if len(self._result_variables) > 0:
+            stmts += f"printf(\"%\" {self._parse_printf_ty(self._result_variables[0])} \"\\n\", {'*' if self._result_variables[0].attr & VarAttr.PTR else ''} res);\n"
+
+        for index, arg in enumerate(self._variables):
+            if arg.attr & VarAttr.PTR:
+                stmts += f"printf(\"%\" {self._parse_printf_ty(arg)} \"\\n\", *p{index});\n"
+
+
+        driver_code = f"""
+#include "csmith.h"
+#include <inttypes.h>
+        
+{program.fn_signature};
+
+{self._parse_c_ty(self._result_variables[0]) if len(self._result_variables) > 0 else "void"} main()
+{{
+    {stmts}
+}}
+
+"""
+
+        # Open the file in write mode and write the content
+        driver_file_name = f"{program.data_dir}/driver_{repeat}.c"
+        with open(driver_file_name, "w") as c_file:
+            c_file.write(driver_code)
+
+        clang_args = [
+            "clang",
+            "-c",
+            f"driver_{repeat}.c",
+            "-o",
+            f"driver_{repeat}.o" 
+        ]
+        subprocess.run(clang_args, stderr=subprocess.DEVNULL, check=True, cwd=program.data_dir)
+
+        
+    def set_fn(self, program: Program) -> None:
+        pattern = re.compile(r'(?P<return_type>.+)\s+' + program.fn_name + r'\((?P<params>[^)]*)\)')
+        c_file_path = os.path.join(program.data_dir, "csmith.c")
+        with open(c_file_path, "r") as c_file:
+            c_source_lines = [line.rstrip() for line in c_file.readlines()]
+
+        for line in c_source_lines:
+            m = re.fullmatch(pattern, line)
+            if not m:
+                continue
+            program.fn_signature = line
+            self._result_variables = self._parse_arg_tys(m.group("return_type"))   
+            self._variables = self._parse_arg_tys(m.group("params"))
+            for var in self._variables:
+                if var.attr & VarAttr.PTR:
+                    self._result_variables.append(var)
+
+
+    def _parse_arg_tys(self, arg_list: str) -> list["NativeVariable"]:
+        if not arg_list:
+            return []
+        args: list[str] = [ty.strip() for ty in arg_list.split(sep=",")]
+        native_vars: list[NativeVariable] = []
+        for arg in args:
+            arg_split = arg.split()
+
+            if arg_split[0] == 'const':
+                arg_split.remove(arg_split[0])
+
+            ty = arg_split[0]
+            is_pointer = False
+            arg_split.remove(ty)
+
+            # pointer type
+            if len(arg_split) >= 1 and arg_split[0] == '*':
+                is_pointer = True
+
+            match = re.search(r'([a-zA-Z]+)(\d+)_t', ty)
+            if match:
+                ty_attr = match.group(1)
+                ty_size = int(match.group(2))
+            else:
+                # void return type
+                return []
+            native_var_attr = VarAttr.NATIVE
+            if ty_attr == "uint":
+                native_var_attr = native_var_attr | VarAttr.UNSIGNED
+            if is_pointer:
+                native_var_attr = native_var_attr | VarAttr.PTR
+
+            native_var_size = int(ty_size)
+            native_vars.append(NativeVariable(
+                native_var_attr, native_var_size, self))
+        return native_vars
+
+    def _parse_c_ty(self, type: "NativeVariable") -> str:
+        if isinstance(type, NativeVariable) and type.size == 1 and type.attr & VarAttr.UNSIGNED:
+            ty = "uint8_t"
+        elif isinstance(type, NativeVariable) and type.size == 2 and type.attr & VarAttr.UNSIGNED:
+            ty =  "uint16_t"
+        elif isinstance(type, NativeVariable) and type.size == 4 and type.attr & VarAttr.UNSIGNED:
+            ty =  "uint32_t"
+        elif isinstance(type, NativeVariable) and type.size == 8 and type.attr & VarAttr.UNSIGNED:
+            ty =  "uint64_t"
+        elif isinstance(type, NativeVariable) and type.size == 1 and type.attr:
+            ty =  "int8_t"
+        elif isinstance(type, NativeVariable) and type.size == 2 and type.attr:
+            ty =  "int16_t"
+        elif isinstance(type, NativeVariable) and type.size == 4 and type.attr:
+            ty =  "int32_t"
+        elif isinstance(type, NativeVariable) and type.size == 8 and type.attr:
+            ty =  "int64_t"
+        if isinstance(type, NativeVariable) and type.attr & VarAttr.PTR:
+            ty += " * "
+        return ty
+
+    def _parse_printf_ty(self, type: "NativeVariable") -> str:
+        if isinstance(type, NativeVariable) and type.size == 1 and type.attr & VarAttr.UNSIGNED:
+            return "PRIu8"
+        if isinstance(type, NativeVariable) and type.size == 2 and type.attr & VarAttr.UNSIGNED:   
+            return "PRIu16"
+        if isinstance(type, NativeVariable) and type.size == 4 and type.attr & VarAttr.UNSIGNED:
+            return "PRIu32"
+        if isinstance(type, NativeVariable) and type.size == 8 and type.attr & VarAttr.UNSIGNED:
+            return "PRIu64"
+        if isinstance(type, NativeVariable) and type.size == 1 and type.attr:
+            return "PRId8"
+        if isinstance(type, NativeVariable) and type.size == 2 and type.attr:
+            return "PRId16"
+        if isinstance(type, NativeVariable) and type.size == 4 and type.attr:
+            return "PRId32"
+        if isinstance(type, NativeVariable) and type.size == 8 and type.attr:
+            return "PRId64"
+        
+
+    @staticmethod
+    def get() -> "NativeContext":
+        return NativeContext()
+
+    @property
+    def variables(self) -> list["NativeVariable"]:
+        return self._variables
+
 class VarAttr(Flag):
     REGISTER = auto()
     MEMORY = auto()
     FUNCTION_ARG = auto()
     PTR = auto()
+    NATIVE = auto()
+    UNSIGNED = auto()
 
 
 class Variable(ABC):
-    def __init__(self, context: EmulationContext, attr: VarAttr) -> None:
+    def __init__(self, context: ProgramContext, attr: VarAttr) -> None:
         super().__init__()
-        self._context: EmulationContext = context
+        self._context: ProgramContext = context
         self._attr = attr
 
     @abstractmethod
-    def set(data: bytes, emulator: Uc) -> bool:
+    def set(data: bytes, emulator: Uc = None) -> bool:
         pass
 
     @abstractmethod
@@ -440,22 +655,17 @@ class DefaultRandomizer(Randomizer):
         self.seed = seed
         self._last_seed = None
 
-    @overload
     def update(self, emulator: Uc, context: EmulationContext):
         self._last_seed = self.seed
         for variable in context.variables:
-            if variable.attr & VarAttr.PTR:
+            data = self._random.randbytes(variable.size)
+            if variable.attr & VarAttr.PTR and \
+                variable.attr & (VarAttr.MEMORY | VarAttr.REGISTER):
                 # TODO: try to prevent overlapping
                 data = self._random.randrange(*context.ptr_range, 0x10)
                 data = data.to_bytes(variable.size, "big")
-            else:
-                data = self._random.randbytes(variable.size)
             variable.set(data, emulator)
         self.seed = self._last_seed
-
-    @overload
-    def update(self, program: Program, context: EmulationContext):
-        raise NotImplementedError()
 
     def get(self) -> int:
         return self._random.randint(0, 2**64 - 1)
@@ -480,3 +690,44 @@ class DefaultRandomizer(Randomizer):
     def next_round(self) -> int:
         self.seed = self.get()
         return self.seed
+    
+class NativeVariable(Variable):
+    def __init__(self,
+                 attr: VarAttr,
+                 size: int,
+                 context: NativeContext) -> None:
+        super().__init__(context, attr)
+        self._context: NativeContext = context
+        self._attr = attr
+        self._size = int(size / 8)
+        self._value = None
+
+    def set(self, data: bytes, emulator: Uc = None) -> bool:
+        if len(data) != self.size:
+            return False
+        self._value = int.from_bytes(data, "big", 
+                                     signed=not (self._attr & VarAttr.UNSIGNED))
+
+
+    def get(self) -> bytes:
+        pass
+
+    def name(self):
+        pass
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    @property
+    def attr(self) -> VarAttr:
+        return self._attr
+    
+    @property  
+    def val(self) -> int:
+        return self._value
+
+    @attr.setter
+    def attr(self, new_attr: VarAttr):
+        self._attr = new_attr
+

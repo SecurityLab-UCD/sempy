@@ -19,10 +19,7 @@ from tqdm import tqdm
 from unicorn import Uc, UcError
 from unicorn.unicorn_const import *
 from elftools.elf.elffile import ELFFile
-
-from sem.native import NativeContext
-
-from .emulation import EmulationContext, Randomizer, VarAttr, Variable, Program
+from .emulation import EmulationContext, NativeContext, Program, Randomizer, VarAttr, Variable
 
 log = logging.Logger(__name__, logging.INFO)
 
@@ -84,6 +81,7 @@ class Experiment:
     debug: bool
     keep_data: bool
     dump_regs: bool
+    run_native: bool
 
     def __post_init__(self):
         global is_debug
@@ -119,51 +117,72 @@ class Experiment:
         )
         self.nativeContext.set_fn(self._programs[0])
         emu_infos = [self.context.make_emulator(program) for program in self._programs]
-        #native_infos = 
         self._emulators = [info[0] for info in emu_infos]
 
-        for _ in range(self.repeat_count):
+        for repeat in range(self.repeat_count):
             self.randomizer.next_round()
-            for idx, emu_info in enumerate(emu_infos):
-                emulator = emu_info[0]
-                self.randomizer.update(emulator, self.context)
 
-            if self.dump_regs:
-                print("Initial register dump:")
-                self._dump_registers()
-
-            for idx, emu_info in enumerate(emu_infos):
-                emulator, emu_begin, emu_end = emu_info
-                try:
+            if not self.run_native:
+                for idx, emu_info in enumerate(emu_infos):
+                    emulator = emu_info[0]
                     self.randomizer.update(emulator, self.context)
-                    emulator.emu_start(emu_begin, emu_end, self.timeout)
-                    if emulator.reg_read(self.context.pc_const) != emu_end:
-                        rmdir(self._programs[0].data_dir)
-                        return (RunStatus.RUN_TIMEOUT, program_seed)
-                except UcError as e:
-                    pc = emulator.reg_read(self.context.pc_const)
-                    pc -= self.context.program_base
-                    if self.debug:
-                        print("Exception register dump:")
-                        self._dump_registers()
-                        print(e)
-                    # NOTE: To debug: objdump -b binary -m i386:x86-64 -D 0_out.bin -M intel
-                    log.error(
-                        f"Exception at PC=0x{pc:x} ({self._programs[idx].name}) with program seed {program_seed}",
-                        exc_info=True,
-                    )
-                    rmdir(self._programs[0].data_dir)
-                    return (RunStatus.RUN_EMU_EXC, program_seed)
 
-            self._diff = self._diff_vars()
-            if self.dump_regs:
-                print("Final register dump:")
-                self._dump_registers()
-            if len(self._diff):
-                dest = save_seed(self._programs[0], program_seed)
-                with open(os.path.join(dest, "diff.txt"), "w") as f:
-                    f.write(str(self.make_diff_table()))
-                return (RunStatus.RUN_DIFF, program_seed)
+                if self.dump_regs:
+                    print("Initial register dump:")
+                    self._dump_registers()
+
+                for idx, emu_info in enumerate(emu_infos):
+                    emulator, emu_begin, emu_end = emu_info
+                    try:
+                        self.randomizer.update(emulator, self.context)
+                        emulator.emu_start(emu_begin, emu_end, self.timeout * UC_SECOND_SCALE)
+                        if emulator.reg_read(self.context.pc_const) != emu_end:
+                            rmdir(self._programs[0].data_dir)
+                            return (RunStatus.RUN_TIMEOUT, program_seed)
+                    except UcError as e:
+                        pc = emulator.reg_read(self.context.pc_const)
+                        pc -= self.context.program_base
+                        if self.debug:
+                            print("Exception register dump:")
+                            self._dump_registers()
+                            print(e)
+                        # NOTE: To debug: objdump -b binary -m i386:x86-64 -D 0_out.bin -M intel
+                        log.error(
+                            f"Exception at PC=0x{pc:x} ({self._programs[idx].name}) with program seed {program_seed}",
+                            exc_info=True,
+                        )
+                        rmdir(self._programs[0].data_dir)
+                        return (RunStatus.RUN_EMU_EXC, program_seed)
+
+                self._diff = self._diff_vars()
+                if self.dump_regs:
+                    print("Final register dump:")
+                    self._dump_registers()
+                if len(self._diff):
+                    dest = save_seed(self._programs[0], program_seed)
+                    with open(os.path.join(dest, "diff.txt"), "w") as f:
+                        f.write(str(self.make_diff_table()))
+                    return (RunStatus.RUN_DIFF, program_seed)
+                
+            if self.run_native:
+                native_results = []
+                for idx, program in enumerate(self._programs):
+                    try:
+                        self.randomizer.update(self.nativeContext, self.nativeContext)
+                        native_results.append(self.nativeContext.run_program(program, repeat, timeout=self.timeout))
+                    except Exception as e:
+                        log.error(
+                            f"Exception while running native program {program.name}",
+                            exc_info=True,
+                        )
+                        rmdir(self._programs[0].data_dir)
+                        return (RunStatus.RUN_EMU_EXC, program_seed, )
+
+                if len(set(native_results)) > 1:
+                    dest = save_seed(self._programs[0], program_seed)
+                    with open(os.path.join(dest, "diff.txt"), "w") as f:
+                        f.write(str(self.make_diff_table_native(native_results)))
+                    return (RunStatus.RUN_DIFF, program_seed)            
 
         if self.keep_data:
             save_seed(self._programs[0], program_seed)
@@ -196,6 +215,13 @@ class Experiment:
             if "ymm" not in var.name
         }
         print(self.make_diff_table(table))
+
+    def make_diff_table_native(self, diff: list[str, str]):
+        if not diff:
+            diff = self._diff_native
+        table = PrettyTable([p.name for p in self._programs])
+        table.add_row(diff)
+        return table
 
     def make_diff_table(self, diff: dict[Variable, list[bytes]] = {}):
         if not diff:
@@ -591,11 +617,19 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         triple = f"{arch if arch != 'x86' else 'x86_64'}--"
         for opt_level in experiment.opt_levels:
             csmith_elf_path = os.path.join(cwd, f"csmith.{opt_level}.elf")
-            self._compile_elf(opt_level, triple, csmith_ll_path, csmith_elf_path)
+            obj_file = f"{csmith_ll_path}.{opt_level}.o"
+            self._compile_elf(opt_level, 
+                              triple, 
+                              csmith_ll_path, 
+                              csmith_elf_path, 
+                              obj_file)
+            program = self._make_program(
+                csmith_elf_path, f"O{opt_level}", fn_info, cwd, False, arch, obj_file
+            )
+            program.opt_level = opt_level
+            program.emi = False
             programs.append(
-                self._make_program(
-                    csmith_elf_path, f"O{opt_level}", fn_info, cwd, False, arch
-                )
+                program
             )
 
         # Compile .o with EMI global
@@ -617,29 +651,27 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
 
         for opt_level in experiment.opt_levels:
             elf_path = os.path.join(cwd, f"{opt_level}.elf")
-
-            self._compile_elf(opt_level, triple, irf_bc_path, elf_path, [emi_o_path])
-            programs.append(
-                self._make_program(
+            obj_file = f"{irf_bc_path}.{opt_level}.o"
+            self._compile_elf(opt_level, 
+                              triple, 
+                              irf_bc_path, 
+                              elf_path, 
+                              obj_file, 
+                              [emi_o_path])
+            program = self._make_program(
                     elf_path,
                     f"O{opt_level}*",
                     fn_info,
                     cwd,
                     True,
-                    arch
-                )
+                    arch,
+                    obj_file
             )
-
-        def rm_glob(pattern):
-            files = glob(os.path.join(cwd, pattern))
-            for file in files:
-                os.remove(file)
-
-        if not is_debug:
-            os.remove(emi_ll_path)
-            rm_glob("*.o")
-            rm_glob("*.elf")
-            rm_glob("*.bc")
+            program.opt_level = opt_level
+            program.emi = True
+            programs.append(
+                program
+            )
 
         return programs
 
@@ -688,6 +720,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         triple: str,
         source: str,
         output: str,
+        obj_file: str,
         link_with: list[str] = [],
     ):
         stderr = subprocess.STDOUT if is_debug else subprocess.DEVNULL
@@ -695,7 +728,6 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         source_type = ".bc" if ".bc" in source else ".ll"
         optimized_source = f"{source.replace(source_type, '')}.{opt_level}{source_type}"
         self._opt(opt_level, source, optimized_source)
-        obj_file = f"{source}.{opt_level}.o"
         llc_args = [
             "llc",
             "-filetype=obj",
@@ -728,10 +760,11 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
         self,
         elf_path: str,
         name: str,
-        fn_info: tuple[str, str, list[str]],
+        fn_info: tuple[str, str, str, list[str]],
         dir: str,
         has_emi: bool,
-        arch: str = "x86"
+        arch: str = "x86",
+        obj_name: str = None
     ):
         fn_name, ret_ty, arg_tys = fn_info
         fn_offset = get_sym_offset(elf_path, fn_name)
@@ -757,6 +790,7 @@ class MutateCSmithProvider(CSmithProvider, IRFuzzerProvider):
                 fn_name,
                 dir,
                 consts,
+                obj_name,
             )
 
     @property

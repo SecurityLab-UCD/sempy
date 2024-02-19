@@ -4,6 +4,7 @@ from sem.emulation import (
     DefaultRandomizer,
     EmulationContext,
     MemVar,
+    NativeContext,
     Program,
     RandMemVar,
     VarAttr,
@@ -187,6 +188,7 @@ class TestImplementations(unittest.TestCase):
             EmulationContext.get("arm64", "arm"),
             EmulationContext.get("x86", "64"),
         ]
+        nativeContext = NativeContext.get()
 
         test_experiments = []
         test_results = []
@@ -204,6 +206,7 @@ class TestImplementations(unittest.TestCase):
                 [],
                 1,
                 context,
+                nativeContext,
                 StubRandomizer(seed=0, preset_vals=presetVals),
                 int(0.5 * UC_SECOND_SCALE),
                 True,

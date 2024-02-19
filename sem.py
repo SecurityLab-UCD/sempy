@@ -13,9 +13,9 @@ from unicorn import UC_SECOND_SCALE
 from sem.emulation import (
     DefaultRandomizer,
     EmulationContext,
+    NativeContext,
 )
 from sem.fuzzing import Experiment, ProgramProvider, RunStatus
-from sem.native import NativeContext
 
 logging.root.setLevel(logging.INFO)
 log = logging.Logger(__name__, logging.INFO)
@@ -118,6 +118,12 @@ def parse_args() -> Namespace:
         nargs="?",
         help="Function name for file provider",
     )
+    parser.add_argument(
+        "-n",
+        "--native",
+        action="store_true",
+        help="run native experiments",
+    )
     parser.add_argument("files", default=[], nargs="*", help="Files to compare")
     args = parser.parse_args()
 
@@ -170,10 +176,11 @@ def fuzz(args: Namespace, seed: int):
         context,
         nativeContext,
         DefaultRandomizer(),
-        int(0.5 * UC_SECOND_SCALE),
+        1,
         args.debug,
         args.keep_data,
         args.dump_regs,
+        args.native,
     )
 
     for i in count(start=1):
@@ -215,14 +222,29 @@ def main():
         fuzz(args, rand.get())
         return
 
-    for _ in range(args.experiments):
-        process = multiprocessing.Process(target=fuzz, args=(args, rand.get()))
-        time.sleep(0.1)  # suppress pwnlib term init error
-        processes.append(process)
-        process.start()
+    try:
+        for _ in range(args.experiments):
+            process = multiprocessing.Process(target=fuzz, args=(args, rand.get()))
+            time.sleep(0.1)  # suppress pwnlib term init error
+            processes.append(process)
+            process.start()
 
-    for process in processes:
-        process.join()
+        for process in processes:
+            process.join()
+    except KeyboardInterrupt:
+        # Handle KeyboardInterrupt (e.g., user manually interrupts the program)
+        print("Execution manually interrupted.")
+
+    finally:
+        # Terminate any remaining processes
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+
+        # Wait for all processes to complete
+        for process in processes:
+            process.join()
+
 
 
 if __name__ == "__main__":
