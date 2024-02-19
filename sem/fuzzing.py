@@ -115,7 +115,8 @@ class Experiment:
         self.context.set_fn(
             self._programs[0].fn_ret_type, self._programs[0].fn_arg_types
         )
-        self.nativeContext.set_fn(self._programs[0])
+        if self.run_native:
+            self.nativeContext.set_fn(self._programs[0])
         emu_infos = [self.context.make_emulator(program) for program in self._programs]
         self._emulators = [info[0] for info in emu_infos]
 

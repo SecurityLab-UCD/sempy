@@ -211,7 +211,8 @@ class TestImplementations(unittest.TestCase):
                 int(0.5 * UC_SECOND_SCALE),
                 True,
                 False,
-                True
+                True,
+                run_native=False
             )
             test_experiments.append(testExperiment)
 
