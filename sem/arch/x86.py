@@ -105,7 +105,7 @@ class X86EmulationContext(EmulationContext):
             # HACK: For now, assume that there won't be enough floating pointer & vector
             # arguments to fill all SSE registers.
             if arg_type[0] not in ["i", "p", "u"]:
-                continue
+                raise Exception("Currently unsupported arguments")
             # NOTE: Also assuming that i<size> is within word size
             arg_gprs[unused_gpr].attr |= VarAttr.FUNCTION_ARG
             if arg_type[0] == "p":

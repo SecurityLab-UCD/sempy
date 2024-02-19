@@ -73,7 +73,7 @@ class Arm64EmulationContext(EmulationContext):
             register = None
             arg = arg.split(':')[0]
             if arg[0] not in ["i", "p", "u"]:
-                continue
+                raise Exception("Currently unsupported arguments")
             if idx < 8:
                 if arg[0] == "p":
                     register = Register(f"x{idx}", self)

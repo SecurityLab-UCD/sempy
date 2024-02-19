@@ -4,6 +4,7 @@ from sem.emulation import (
     DefaultRandomizer,
     EmulationContext,
     MemVar,
+    NativeContext,
     Program,
     RandMemVar,
     VarAttr,
@@ -120,7 +121,7 @@ class TestProgramProvider(MutateCSmithProvider):
             with open(image_path, "rb") as image_file:
                 image = image_file.read()
             return Program(f"test_{context.arch}_{context.mode}", 
-                           image, ret_ty, arg_tys, fn_offset, tmpdir)
+                           image, ret_ty, arg_tys, fn_offset, fn_name, tmpdir)
 
 
 class StubRandomizer(DefaultRandomizer):
@@ -187,6 +188,7 @@ class TestImplementations(unittest.TestCase):
             EmulationContext.get("arm64", "arm"),
             EmulationContext.get("x86", "64"),
         ]
+        nativeContext = NativeContext.get()
 
         test_experiments = []
         test_results = []
@@ -204,11 +206,13 @@ class TestImplementations(unittest.TestCase):
                 [],
                 1,
                 context,
+                nativeContext,
                 StubRandomizer(seed=0, preset_vals=presetVals),
                 int(0.5 * UC_SECOND_SCALE),
                 True,
                 False,
-                True
+                True,
+                run_native=False
             )
             test_experiments.append(testExperiment)
 
